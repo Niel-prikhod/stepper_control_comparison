@@ -1,0 +1,10 @@
+build/
+*.hex
+*.bin
+*.elf
+/compile_commands.json
+CMakeUserPresets.json
+cubemx/*/CMakeLists.txt
+cubemx/*/CMakePresets.json
+cubemx/*/*.mxproject
+cubemx/*/cmake/
