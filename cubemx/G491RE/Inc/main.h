@@ -29,6 +29,9 @@ extern "C" {
 /* Includes ------------------------------------------------------------------*/
 #include "stm32g4xx_hal.h"
 
+#include "stm32g4xx_nucleo.h"
+#include <stdio.h>
+
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
@@ -57,16 +60,28 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
-#define MOTOR_A_Pin GPIO_PIN_3
+#define RCC_OSC32_IN_Pin GPIO_PIN_14
+#define RCC_OSC32_IN_GPIO_Port GPIOC
+#define RCC_OSC32_OUT_Pin GPIO_PIN_15
+#define RCC_OSC32_OUT_GPIO_Port GPIOC
+#define RCC_OSC_IN_Pin GPIO_PIN_0
+#define RCC_OSC_IN_GPIO_Port GPIOF
+#define RCC_OSC_OUT_Pin GPIO_PIN_1
+#define RCC_OSC_OUT_GPIO_Port GPIOF
+#define MOTOR_A_Pin GPIO_PIN_0
 #define MOTOR_A_GPIO_Port GPIOA
-#define MOTOR_B_Pin GPIO_PIN_4
+#define MOTOR_B_Pin GPIO_PIN_1
 #define MOTOR_B_GPIO_Port GPIOA
-#define USER_LED_Pin GPIO_PIN_5
-#define USER_LED_GPIO_Port GPIOA
-#define MOTOR_D_Pin GPIO_PIN_6
-#define MOTOR_D_GPIO_Port GPIOA
-#define MOTOR_C_Pin GPIO_PIN_7
+#define MOTOR_C_Pin GPIO_PIN_4
 #define MOTOR_C_GPIO_Port GPIOA
+#define MOTOR_D_Pin GPIO_PIN_0
+#define MOTOR_D_GPIO_Port GPIOB
+#define T_SWDIO_Pin GPIO_PIN_13
+#define T_SWDIO_GPIO_Port GPIOA
+#define T_SWCLK_Pin GPIO_PIN_14
+#define T_SWCLK_GPIO_Port GPIOA
+#define T_SWO_Pin GPIO_PIN_3
+#define T_SWO_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 
