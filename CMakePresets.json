@@ -1,0 +1,38 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "toolchainFile": "${sourceDir}/cmake/toolchain/arm-none-eabi.cmake",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "g491re",
+      "displayName": "STM32G491RE",
+      "inherits": "base",
+      "cacheVariables": { "TARGET_BOARD": "g491re" }
+    },
+    {
+      "name": "nucleo-f401re",
+      "displayName": "Nucleo-F401RE (F4)",
+      "inherits": "base",
+      "cacheVariables": { "TARGET_BOARD": "nucleo-f401re" }
+    },
+    {
+      "name": "nucleo-g431kb",
+      "displayName": "Nucleo-G431KB (G4)",
+      "inherits": "base",
+      "cacheVariables": { "TARGET_BOARD": "nucleo-g431kb" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "g491re", "configurePreset": "g491re" },
+    { "name": "nucleo-f401re", "configurePreset": "nucleo-f401re" },
+    { "name": "nucleo-g431kb", "configurePreset": "nucleo-g431kb" }
+  ]
+}
