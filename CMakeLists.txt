@@ -17,4 +17,5 @@ include(${CMAKE_SOURCE_DIR}/cmake/boards/${TARGET_BOARD}.cmake)
 
 add_subdirectory(src/platform)
 add_subdirectory(src/drivers/motor)
+add_subdirectory(src/drivers/encoder)
 add_subdirectory(src/app)
