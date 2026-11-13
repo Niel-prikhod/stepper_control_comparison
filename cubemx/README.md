@@ -11,6 +11,11 @@ generated files by hand, and do not use the `CMakeLists.txt`,
 sources through `src/platform/CMakeLists.txt` and the board files in
 `cmake/boards/`.
 
+CubeMX may generate either `Core/Inc` + `Core/Src` or `Inc` + `Src`; the
+platform CMake detects both. If the board BSP is enabled (e.g. Nucleo LEDs,
+button, VCP), set `BOARD_BSP_DEFINE` in `cmake/boards/<board>.cmake` to the
+matching CubeMX symbol (`USE_NUCLEO_64` for Nucleo-64).
+
 ## Recommended CubeMX settings
 
 - Toolchain: CMake
