@@ -1,18 +1,21 @@
 # stepper_control
 
-Multi-board STM32 stepper motor control. CubeMX-generated HAL per board, a
-portable motor driver, and a HAL-free platform abstraction.
+Multi-board STM32 stepper motor control with AS5600-compatible I2C encoder
+feedback and VCP UART logging. CubeMX-generated HAL per board, portable motor
+and encoder drivers, and a HAL-free platform abstraction.
 
 ## Layout
 
 ```
 inc/
-  drivers/motor/   public driver API
-  platform/        HAL-free interfaces
+  drivers/motor/   public motor driver API
+  drivers/encoder/ public encoder driver API
+  platform/        HAL-free interfaces (stepper, i2c, log)
   app/             app-internal API
 src/
-  drivers/motor/   driver impl + private headers
-  platform/stm32/  HAL adapter (only place including CubeMX headers)
+  drivers/motor/   motor driver impl + private headers
+  drivers/encoder/ AS5600-compatible encoder impl
+  platform/stm32/  HAL adapters (only place including CubeMX headers)
   platform/shim/   startup/system stub for boards without CubeMX output
   app/             main.c + control logic
 cubemx/<BOARD>/    CubeMX-owned output (never hand-edit)
@@ -31,14 +34,21 @@ app -> drivers -> platform_if
 app -> platform_stm32 -> cube_hal -> cubemx/<BOARD> + HAL
 ```
 
+## Documentation
+
+Long-form notes covering the build, CubeMX/HAL, platform layer, board details,
+the 28BYJ-48/ULN2003A wiring, flashing/debugging, and extension steps are in
+`notes/README.md`.
+
 ## Prerequisites
 
 - `arm-none-eabi-gcc`, `cmake >= 3.22`, `ninja`
 - STM32Cube firmware package for the board family
+- `st-flash` (or `openocd`) for flashing
 
 ## HAL dependency
 
-HAL/CMSIS live in the STM32Cube repository, not in this repo. 
+HAL/CMSIS live in the STM32Cube repository, not in this repo.
 Point CMake at it:
 
 ```sh
@@ -47,7 +57,21 @@ export STM32CUBE_FW_G4=$HOME/STM32Cube/Repository/STM32Cube_FW_G4_V1.6.3
 
 or pass `-DCUBE_FW_PATH=/path/to/STM32Cube_FW_G4_x.y.z`.
 
-## Build
+## Build and flash
+
+```sh
+make            # configure + build (BOARD=g491re by default)
+make flash      # build, then flash with st-flash (falls back to openocd)
+make reset      # reset the board
+make erase      # mass erase
+make size       # show firmware size
+```
+
+Useful overrides: `make BOARD=nucleo-f401re`, `make FLASH_TOOL=openocd`,
+`make CUBE_FW_PATH=/path/to/STM32Cube_FW_G4_x.y.z`. `CUBE_FW_PATH` is
+auto-detected from `~/STM32Cube/Repository/STM32Cube_FW_G4_*` when possible.
+
+Equivalent CMake commands:
 
 ```sh
 cmake --preset g491re
@@ -55,6 +79,21 @@ cmake --build build/g491re
 ```
 
 Artifacts: `build/g491re/src/app/firmware.{elf,hex,bin}`.
+
+## Encoder and serial log
+
+The default firmware expects an AS5600-compatible encoder on I2C1
+(`PA15` SCL, `PB7` SDA, address `0x36`) and logs on the ST-Link VCP
+(LPUART1 `PA2`/`PA3`, 115200 8N1). Open the VCP with a serial terminal:
+
+```sh
+stty -F /dev/ttyACM0 115200 raw -echo
+cat /dev/ttyACM0
+```
+
+Each loop logs the step count, raw encoder value, angle in degrees, delta since
+the previous sample, and magnet status flags. `AS5600L` uses address `0x40`;
+change `ENCODER_I2C_ADDRESS` or call `encoder_set_address()`.
 
 Other boards: `cmake --preset nucleo-f401re`, `nucleo-g431kb` (shim build until
 CubeMX output exists in `cubemx/<board>/`).
