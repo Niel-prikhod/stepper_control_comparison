@@ -16,6 +16,104 @@ platform CMake detects both. If the board BSP is enabled (e.g. Nucleo LEDs,
 button, VCP), set `BOARD_BSP_DEFINE` in `cmake/boards/<board>.cmake` to the
 matching CubeMX symbol (`USE_NUCLEO_64` for Nucleo-64).
 
+## Platform HAL expectations
+
+`src/platform/stm32/` is the only code that consumes the generated project. It
+expects the CubeMX output and BSP configuration to provide the following.
+
+### Generated API and symbols
+
+| Expectation | Used for |
+| --- | --- |
+| `main.h` on the include path | HAL/BSP headers and board pin labels |
+| `SystemClock_Config()` | Clock tree setup |
+| `MX_GPIO_Init()` | Motor and unused-pin GPIO setup |
+| `MOTOR_A_GPIO_Port` / `MOTOR_A_Pin` | Motor coil A |
+| `MOTOR_B_GPIO_Port` / `MOTOR_B_Pin` | Motor coil B |
+| `MOTOR_C_GPIO_Port` / `MOTOR_C_Pin` | Motor coil C |
+| `MOTOR_D_GPIO_Port` / `MOTOR_D_Pin` | Motor coil D |
+| `LED2`, `BSP_LED_Init()`, `BSP_LED_Toggle()` | Heartbeat LED |
+| `MX_DMA_Init()` | DMA1/DMAMUX clocks and DMA1_Channel1 IRQ |
+| `MX_I2C1_Init()` | I2C1 handle and timing |
+| `hi2c1` | I2C1 handle |
+| `hdma_i2c1_rx` | I2C1 RX DMA handle |
+| `I2C1_EV_IRQn`, `I2C1_ER_IRQn` | I2C event/error NVIC lines |
+| `BSP_COM_Init()`, `BSP_COM_SelectLogPort()` | VCP LPUART1 setup |
+| `COM1`, `COM_InitTypeDef`, `hcom_uart[COM1]` | BSP COM logging handle |
+| `HAL_GetTick()` | I2C timeout and HAL delay |
+
+`DMA1_Channel1_IRQHandler()` must remain in the generated interrupt file and
+call `HAL_DMA_IRQHandler(&hdma_i2c1_rx)`.
+
+### Peripheral configuration
+
+- **I2C1**: enabled, 7-bit addressing, analog filter enabled, no clock-stretch
+  disable. The current generated timing is `0x40B285C2` for the 170 MHz clock
+  tree. Pins are `PA15` = SCL and `PB7` = SDA, alternate function 4,
+  open-drain. External or encoder-board pull-ups are required.
+- **I2C1 RX DMA**: `DMA1_Channel1`, `DMA_REQUEST_I2C1_RX`,
+  peripheral-to-memory, byte/byte, memory increment, normal mode.
+- **I2C1 interrupts**: the platform adapter enables `I2C1_EV_IRQn` and
+  `I2C1_ER_IRQn` and defines `I2C1_EV_IRQHandler()` /
+  `I2C1_ER_IRQHandler()`. Do not enable CubeMX generation of duplicate I2C
+  handlers unless you remove the adapter versions.
+- **I2C recovery**: after a timeout the adapter calls
+  `HAL_I2C_DeInit(&hi2c1)` and then `MX_I2C1_Init()`. The generated init path
+  must be safe to call again.
+- **BSP COM**: `USE_BSP_COM_FEATURE=1`, `USE_COM_LOG=1`, `COM1` on LPUART1
+  `PA2`/`PA3`, 115200 8N1.
+- **Motor GPIO**: `PA0`, `PA1`, `PA4`, `PB0` as push-pull outputs.
+- **Clock**: 170 MHz from HSI/PLL. If the clock tree changes, regenerate the
+  I2C timing value.
+
+### Interrupt ownership
+
+The platform adapter owns these strong symbols:
+
+- `I2C1_EV_IRQHandler()`
+- `I2C1_ER_IRQHandler()`
+- `HAL_I2C_MemRxCpltCallback()`
+- `HAL_I2C_ErrorCallback()`
+
+Do not define them in application code or another driver. If CubeMX regenerates
+them into `stm32g4xx_it.c`, remove the duplicate definitions or move the
+platform implementation into the generated file. Duplicate strong definitions
+fail the link.
+
+The adapter sets DMA1_Channel1 priority `0`, I2C1 event/error priority `1`, and
+assumes SysTick priority `0`. The I2C timeout relies on a running 1 ms
+`HAL_GetTick()`.
+
+### Initialization order
+
+The adapter requires:
+
+1. `HAL_Init()`
+2. `SystemClock_Config()`
+3. `MX_GPIO_Init()`
+4. `BSP_LED_Init(LED2)`
+5. `MX_DMA_Init()`
+6. `MX_I2C1_Init()`
+7. Enable `I2C1_EV_IRQn` and `I2C1_ER_IRQn`
+8. `BSP_COM_Init(COM1, ...)` and `BSP_COM_SelectLogPort(COM1)`
+
+`MX_DMA_Init()` must run before `MX_I2C1_Init()` because the I2C MSP init
+configures the DMA handle.
+
+### Board-porting expectations
+
+The adapter selects the HAL path with `__has_include("main.h")`. That detects
+HAL presence, not peripheral capability. A HAL-backed board without I2C1, DMA,
+BSP COM, or the expected motor pin labels will compile the HAL path and fail at
+compile or link time. Such a board needs one of:
+
+- stubs for unsupported platform functions,
+- compile-time capability macros, or
+- a board-specific platform adapter selected by CMake.
+
+USART1, TIM1, the user button, and SWO are not required by the current platform
+adapter and may remain generated but inactive.
+
 ## Recommended CubeMX settings
 
 - Toolchain: CMake
