@@ -46,7 +46,9 @@ void platform_init(void) {
   HAL_Init();
   SystemClock_Config();
   MX_GPIO_Init();
+#if !defined(PLATFORM_BOARD_F446RE)
   BSP_LED_Init(LED2);
+#endif
   platform_dwt_init();
   platform_i2c_init();
   platform_log_init();
@@ -91,11 +93,16 @@ void platform_delay_us(uint32_t us) {
 
 void platform_led_set(bool on) {
 #if PLATFORM_HAVE_HAL
+#if defined(PLATFORM_BOARD_F446RE)
+  HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin,
+                    on ? GPIO_PIN_SET : GPIO_PIN_RESET);
+#else
   if (on) {
     BSP_LED_On(LED2);
   } else {
     BSP_LED_Off(LED2);
   }
+#endif
 #else
   (void)on;
 #endif
@@ -103,6 +110,10 @@ void platform_led_set(bool on) {
 
 void platform_led_toggle(void) {
 #if PLATFORM_HAVE_HAL
+#if defined(PLATFORM_BOARD_F446RE)
+  HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
+#else
   BSP_LED_Toggle(LED2);
+#endif
 #endif
 }

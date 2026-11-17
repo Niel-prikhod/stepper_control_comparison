@@ -6,6 +6,16 @@
 #if __has_include("main.h")
 #define PLATFORM_HAVE_HAL 1
 #include "main.h"
+#if defined(PLATFORM_BOARD_F446RE)
+#include "usart.h"
+#define PLATFORM_UART_HANDLE (&huart2)
+#define PLATFORM_UART_IRQn USART2_IRQn
+#define PLATFORM_UART_IRQHandler USART2_IRQHandler
+#else
+#define PLATFORM_UART_HANDLE (&hcom_uart[COM1])
+#define PLATFORM_UART_IRQn LPUART1_IRQn
+#define PLATFORM_UART_IRQHandler LPUART1_IRQHandler
+#endif
 #else
 #define PLATFORM_HAVE_HAL 0
 #endif
@@ -34,7 +44,7 @@ static bool s_loopback_verified;
  * @return true when the receive was armed; false on HAL failure.
  */
 static bool platform_uart_arm(void) {
-  if (HAL_UART_Receive_IT(&hcom_uart[COM1], &s_rx_byte, 1u) != HAL_OK) {
+  if (HAL_UART_Receive_IT(PLATFORM_UART_HANDLE, &s_rx_byte, 1u) != HAL_OK) {
     s_rx_errors++;
     return false;
   }
@@ -44,12 +54,12 @@ static bool platform_uart_arm(void) {
 
 void platform_uart_init(void) {
 #if PLATFORM_HAVE_HAL
-  if (hcom_uart[COM1].Instance == 0) {
+  if (PLATFORM_UART_HANDLE->Instance == 0) {
     return;
   }
 
-  HAL_NVIC_SetPriority(LPUART1_IRQn, 2u, 0u);
-  HAL_NVIC_EnableIRQ(LPUART1_IRQn);
+  HAL_NVIC_SetPriority(PLATFORM_UART_IRQn, 2u, 0u);
+  HAL_NVIC_EnableIRQ(PLATFORM_UART_IRQn);
   s_ready = platform_uart_arm();
 #endif
 }
@@ -70,7 +80,7 @@ bool platform_uart_selftest(void) {
     return false;
   }
 
-  if (HAL_UART_Transmit(&hcom_uart[COM1], (uint8_t *)test_line,
+  if (HAL_UART_Transmit(PLATFORM_UART_HANDLE, (uint8_t *)test_line,
                         (uint16_t)(sizeof(test_line) - 1u),
                         100u) != HAL_OK) {
     return false;
@@ -148,7 +158,7 @@ bool platform_uart_read_line(char *buf, uint32_t buf_len,
 
 uint32_t platform_uart_baud(void) {
 #if PLATFORM_HAVE_HAL
-  return hcom_uart[COM1].Init.BaudRate;
+  return PLATFORM_UART_HANDLE->Init.BaudRate;
 #else
   return 115200u;
 #endif
@@ -172,15 +182,15 @@ uint32_t platform_uart_rx_error_count(void) {
 
 #if PLATFORM_HAVE_HAL
 /**
- * @brief Forward LPUART1 interrupts to the HAL.
+ * @brief Forward the selected VCP UART interrupt to the HAL.
  *
  * Why: The HAL byte-receive state machine needs its interrupt serviced so the
  * command line can be assembled.
  *
  * @return None.
  */
-void LPUART1_IRQHandler(void) {
-  HAL_UART_IRQHandler(&hcom_uart[COM1]);
+void PLATFORM_UART_IRQHandler(void) {
+  HAL_UART_IRQHandler(PLATFORM_UART_HANDLE);
 }
 
 /**
@@ -193,7 +203,7 @@ void LPUART1_IRQHandler(void) {
  * @return None.
  */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
-  if (huart->Instance != hcom_uart[COM1].Instance) {
+  if (huart->Instance != PLATFORM_UART_HANDLE->Instance) {
     return;
   }
 
@@ -235,7 +245,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
  * @return None.
  */
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart) {
-  if (huart->Instance != hcom_uart[COM1].Instance) {
+  if (huart->Instance != PLATFORM_UART_HANDLE->Instance) {
     return;
   }
 

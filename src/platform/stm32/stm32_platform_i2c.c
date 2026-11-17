@@ -211,9 +211,11 @@ uint32_t platform_i2c_last_state(void) {
  *
  * @return None.
  */
+#if !defined(PLATFORM_BOARD_F446RE)
 void I2C1_EV_IRQHandler(void) {
   HAL_I2C_EV_IRQHandler(&hi2c1);
 }
+#endif
 
 /**
  * @brief Forward I2C1 error interrupts to the HAL.

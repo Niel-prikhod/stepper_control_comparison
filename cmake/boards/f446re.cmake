@@ -3,7 +3,6 @@ set(BOARD_MCU "STM32F446RETx")
 set(BOARD_HAL_DEFINE "STM32F446xx")
 set(BOARD_FAMILY "F4")
 set(BOARD_CUBE_DIR "${CMAKE_SOURCE_DIR}/cubemx/F446RE")
-set(BOARD_BSP_DEFINE "USE_NUCLEO_64")
 
 set(MCU_CPU "cortex-m4")
 set(MCU_FPU "fpv4-sp-d16")
@@ -39,4 +38,5 @@ add_compile_definitions(
   ${BOARD_HAL_DEFINE}
   USE_HAL_DRIVER
   STM32F4
+  PLATFORM_BOARD_F446RE
 )

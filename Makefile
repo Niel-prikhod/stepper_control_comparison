@@ -12,9 +12,17 @@ FLASH_TOOL ?= auto
 FLASH_ADDR ?= 0x08000000
 OPENOCD ?= openocd
 OPENOCD_INTERFACE ?= interface/stlink.cfg
+ifeq ($(BOARD),f446re)
+OPENOCD_TARGET ?= target/stm32f4x.cfg
+else
 OPENOCD_TARGET ?= target/stm32g4x.cfg
+endif
 
+ifeq ($(BOARD),f446re)
+CUBE_FW_PATH ?= $(firstword $(wildcard $(HOME)/STM32Cube/Repository/STM32Cube_FW_F4_*))
+else
 CUBE_FW_PATH ?= $(firstword $(wildcard $(HOME)/STM32Cube/Repository/STM32Cube_FW_G4_*))
+endif
 ifneq ($(CUBE_FW_PATH),)
 CMAKE_ARGS += -DCUBE_FW_PATH=$(CUBE_FW_PATH)
 endif
