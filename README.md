@@ -41,6 +41,11 @@ Long-form notes covering the build, CubeMX/HAL, platform layer, board details,
 the 28BYJ-48/ULN2003A wiring, flashing/debugging, and extension steps are in
 `notes/README.md`.
 
+Mode-by-mode commands, parameters, outputs, and interpretation are documented
+in [`docs/testing-modes.md`](docs/testing-modes.md). Public functions are
+documented with Doxygen comments in their header declarations under `inc/`;
+private helpers and interrupt callbacks are documented in their source files.
+
 ## Prerequisites
 
 - `arm-none-eabi-gcc`, `cmake >= 3.22`, `ninja`

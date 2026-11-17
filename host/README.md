@@ -56,3 +56,6 @@ Override them with `--mode1-hz`, `--mode1-duration-ms`, `--mode2-hz`,
 Use `--modes 0,1,3` to select modes, `--keep-going` to continue after a failed
 mode, `--out-dir` to change the output root, and `--dry-run` to print the
 commands without opening the serial port.
+
+See [`docs/testing-modes.md`](../docs/testing-modes.md) for the measurement
+method, output fields, limits, and interpretation of each mode.
