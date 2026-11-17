@@ -46,9 +46,9 @@ A failed command produces `ERR <reason>` and, for a started measurement,
 | --- | --- | --- | --- |
 | 0 | `mode0` | none | no parameters |
 | 1 | `mode1 <target_hz> <duration_ms>` | `1000 1000` | `20..5000` Hz, `1..20000` ms |
-| 2 | `mode2 <target_hz> <samples>` | `1000 10000` | `20..5000` Hz, `2..100000` samples |
-| 3 | `mode3 <target_hz> <samples>` | `1000 1000` | `20..5000` Hz, `1..10000` samples |
-| 4 | `mode4 <trials>` | `100` | `1..10000` trials |
+| 2 | `mode2 <target_hz> <samples> [raw=1]` | `1000 10000` | `20..5000` Hz, `2..100000` samples; `raw=1` requires `2..100` samples |
+| 3 | `mode3 <target_hz> <samples>` | `1000 1000` | `0..5000` Hz, `1..10000` samples; `target_hz=0` means `samples` is duration in ms (`1..20000`) |
+| 4 | `mode4 <trials>` | `100` | `1..100` trials |
 | 5 | `mode5 <start_hz> <step_hz> <max_hz>` | `100 200 5000` | start `20..max`, max `<=5000`, step `>0`, at most 100 points |
 
 ## Mode 0: board and peripheral diagnostics
@@ -65,6 +65,12 @@ Output fields include `board`, `mcu`, `firmware`, `clock_hz`, `dwt`, `timer`,
 `encoder_addr`, `encoder_counts_per_rev`, `steps_per_rev`, and, when the
 encoder responds, `encoder_status` and `encoder_raw`; otherwise it reports
 `encoder_read=fail`.
+
+Mode 0 also reports the timer configuration for `100`, `333`, `500`, `777`,
+`1000`, `1234`, `2000`, `2345`, and `4000` Hz. Each group contains
+`timing_hz`, `timing_psc`, `timing_arr`, `timing_period_us`,
+`timing_actual_hz`, and `timing_error_ppm`. This exposes the integer
+auto-reload quantization that a frequency-only check can hide.
 
 `uart_loopback=software` means the UART transmit path and receiver setup passed
 without a physical TX/RX echo; `verified` requires the loopback test line to be
@@ -106,17 +112,25 @@ scheduling.
 
 The firmware collects `samples` timer intervals after the first step and
 computes mean, sample standard deviation, minimum, maximum, and peak-to-peak
-jitter. `measured_hz` is derived from the mean interval:
+jitter. The raw DWT cycle deltas are kept for the variance calculation, so
+`sigma_ns` is not truncated by microsecond conversion. `measured_hz` is derived
+from the mean interval:
 
 ```text
 measured_hz = 1 / mean_interval_us
 jitter_pct  = (max_interval_us - min_interval_us) / mean_interval_us * 100
 ```
 
-Output fields: `target_hz`, `measured_hz`, `samples`, `mean_interval_us`,
-`stddev_us`, `min_interval_us`, `max_interval_us`, `p2p_jitter_us`,
-`jitter_pct`, and `clock_hz`. The current firmware does not export the raw
-interval list; use the statistics for comparison between boards and builds.
+Output fields: `target_hz`, `measured_hz`, `samples`, `mean_ns`, `sigma_ns`,
+`min_ns`, `max_ns`, `p2p_ns`, `mean_interval_us`, `stddev_us`,
+`min_interval_us`, `max_interval_us`, `p2p_jitter_us`, `jitter_pct`, and
+`clock_hz`.
+
+With `raw=1`, the firmware also prints `raw_count` followed by that many raw
+DWT cycle deltas, one integer per line, before `END`. The raw dump is limited
+to `APP_MAX_RAW_SAMPLES` (100) values so it fits in the static buffer. Use it
+to recompute the sample standard deviation offline and compare it with
+`sigma_ns`.
 
 ## Mode 3: timer ISR load
 
@@ -127,7 +141,8 @@ uv run host/measure.py --port /dev/ttyACM0 mode3 1000 1000
 Why: quantifies how much CPU time the step timer interrupt consumes. It is
 useful before adding work to the ISR or increasing the step rate.
 
-The firmware runs the same number of timer interrupts in three conditions:
+When `target_hz` is non-zero, the firmware runs the same number of timer
+interrupts in three conditions:
 
 | Condition | Behavior |
 | --- | --- |
@@ -135,19 +150,31 @@ The firmware runs the same number of timer interrupts in three conditions:
 | `constant` | Motor steps every interrupt at `target_hz` |
 | `ramp` | Motor steps and frequency ramps from `target_hz / 10` to `target_hz` over the first half, then back down |
 
-For each condition it reports `condition`, `load_pct`, `isr_count`,
-`isr_cycles`, `period_cycles`, `peak_isr_cycles`, and `peak_isr_us`.
-`load_pct` is the sum of measured ISR execution cycles divided by the sum of
-measured timer periods:
+For each condition it reports `condition`, `load_pct`, `peak_load_pct`,
+`isr_count`, `isr_cycles`, `period_cycles`, `peak_isr_cycles`, and
+`peak_isr_us`.
+
+With `target_hz=0`, no step timer interrupt runs. The firmware services the
+main loop for `samples` milliseconds and reports a timer-free `condition=idle`
+with `load_pct`, `peak_load_pct`, `idle_cycles`, `busy_cycles`,
+`total_cycles`, `iterations`, and `main_loop_mean_us`. The load is computed
+from the measured main-loop service time:
+
+```text
+load_pct = 100 * (1 - idle_cycles / total_cycles)
+```
+
+For non-zero `target_hz`, `load_pct` is the sum of measured ISR execution
+cycles divided by the sum of measured timer periods:
 
 ```text
 load_pct = sum(isr_cycles) / sum(period_cycles) * 100
 ```
 
-The `idle` condition still includes the timer ISR, so it measures interrupt
-overhead without motor GPIO writes. The ramp condition changes the auto-reload
-value from inside the ISR; compare it with `constant` to see the cost of
-changing the timer period.
+In that mode, the `idle` condition still includes the timer ISR, so it measures
+interrupt overhead without motor GPIO writes. The ramp condition changes the
+auto-reload value from inside the ISR; compare it with `constant` to see the
+cost of changing the timer period.
 
 ## Mode 4: command-to-first-step latency
 
@@ -159,10 +186,13 @@ Why: estimates response time from command processing to the first motor step.
 It is useful for evaluating the control-loop and UART handling overhead.
 
 Each trial starts a 100 Hz timer and records the time from the start of command
-processing to the first timer interrupt. Trials are separated by 1 ms.
+processing to the first timer interrupt. Trials are separated by 50 ms so the
+next command cannot overlap the previous step. All latency samples are kept in
+a static buffer, so the firmware can report `p99_us` in addition to mean,
+standard deviation, minimum, and maximum.
 Output fields: `num_trials`, `baud`, `cmd_len`, `latency_ref=cmd_process`,
-`uart_rx_to_first_step_us`, `mean_us`, `stddev_us`, `min_us`, `max_us`, and
-`clock_hz`.
+`uart_rx_to_first_step_us`, `mean_us`, `sigma_us`, `stddev_us`, `min_us`,
+`max_us`, `p99_us`, and `clock_hz`.
 
 `mean_us` and the min/max values use the command-processing reference.
 `uart_rx_to_first_step_us` is measured only for the first trial and uses the
@@ -204,6 +234,24 @@ Summary output: `points`, `max_stable_hz`, `first_loss_hz`, and
 within tolerance; it is not necessarily the highest contiguous stable range.
 Inspect `first_loss_hz` and `failing_points` together, especially when the
 measured steps are non-monotonic due to inertia or backlash.
+
+## Full validation scenario
+
+`host/run_scenario.py` runs the fixed G491RE validation scenario and writes
+`results/<board>/table.md`, `summary.csv`, `raw_index.md`, and
+`run_data.json`:
+
+```sh
+python3 host/run_scenario.py --port /dev/ttyACM0
+```
+
+The scenario runs `mode0` first and stops immediately if the board identity,
+clock, DWT, timer, UART, I2C, encoder, or timer PSC/ARR diagnostics fail. It
+then runs nine Mode 1 frequencies (5 runs each), four Mode 2 frequencies
+(3 runs each), four raw Mode 2 dumps, the timer-free and constant Mode 3
+conditions, and `mode4 100`. Each command is retried once; a run that fails
+twice is marked incomplete and recorded as a warning. The raw index contains
+only files generated by that scenario run.
 
 ## Collecting all modes for one board
 

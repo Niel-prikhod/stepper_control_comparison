@@ -4,6 +4,7 @@
 #include <app/status.h>
 #include <app/version.h>
 #include <drivers/encoder/encoder.h>
+#include <platform/cpu.h>
 #include <platform/dwt.h>
 #include <platform/i2c.h>
 #include <platform/log.h>
@@ -211,6 +212,38 @@ static void run_mode0(void) {
                (unsigned long)ENCODER_COUNTS_PER_REV);
   platform_log("steps_per_rev=%lu\r\n", (unsigned long)APP_STEPS_PER_REV);
 
+  static const uint32_t diag_hz[] = {100u, 333u, 500u, 777u, 1000u,
+                                     1234u, 2000u, 2345u, 4000u};
+  for (uint32_t i = 0u; i < sizeof(diag_hz) / sizeof(diag_hz[0]); i++) {
+    uint32_t hz = diag_hz[i];
+    uint32_t period_us = 1000000u / hz;
+    if (period_us == 0u) {
+      period_us = 1u;
+    }
+    if (period_us > 65535u) {
+      period_us = 65535u;
+    }
+    (void)platform_step_timer_set_period_us(period_us);
+    uint32_t psc = platform_step_timer_get_prescaler();
+    uint32_t arr = platform_step_timer_get_autoreload();
+    uint32_t actual_period_us = arr + 1u;
+    uint64_t actual_micro_hz = 1000000000000ULL / actual_period_us;
+    uint64_t requested_micro_hz = (uint64_t)hz * 1000000ULL;
+    int64_t error_ppm =
+        ((int64_t)actual_micro_hz - (int64_t)requested_micro_hz) * 1000000LL /
+        (int64_t)requested_micro_hz;
+    uint32_t actual_milli_hz = (uint32_t)(actual_micro_hz / 1000ULL);
+    platform_log("timing_hz=%lu\r\n", (unsigned long)hz);
+    platform_log("timing_psc=%lu\r\n", (unsigned long)psc);
+    platform_log("timing_arr=%lu\r\n", (unsigned long)arr);
+    platform_log("timing_period_us=%lu\r\n",
+                 (unsigned long)actual_period_us);
+    platform_log("timing_actual_hz=%lu.%03lu\r\n",
+                 (unsigned long)(actual_milli_hz / 1000u),
+                 (unsigned long)(actual_milli_hz % 1000u));
+    platform_log("timing_error_ppm=%ld\r\n", (long)error_ppm);
+  }
+
   uint8_t diag[3] = {0u, 0u, 0u};
   if (platform_i2c_read_reg_blocking(ENCODER_I2C_ADDRESS, ENCODER_STATUS_REG,
                                      diag, sizeof(diag), 20u)) {
@@ -272,6 +305,7 @@ static void handle_mode1(char **cursor) {
 static void handle_mode2(char **cursor) {
   uint32_t hz = DEFAULT_MODE2_HZ;
   uint32_t samples = DEFAULT_MODE2_SAMPLES;
+  bool raw_dump = false;
   bool present;
 
   if (!parse_optional_u32(cursor, &hz, &present)) {
@@ -282,6 +316,15 @@ static void handle_mode2(char **cursor) {
     log_error("PARAM");
     return;
   }
+  char *token = next_token(cursor);
+  if (token != 0) {
+    if (strcmp(token, "raw=1") == 0) {
+      raw_dump = true;
+    } else {
+      log_error("PARAM");
+      return;
+    }
+  }
   if (next_token(cursor) != 0) {
     log_error("PARAM");
     return;
@@ -290,9 +333,13 @@ static void handle_mode2(char **cursor) {
     log_error("PARAM");
     return;
   }
+  if (raw_dump && samples > APP_MAX_RAW_SAMPLES) {
+    log_error("PARAM");
+    return;
+  }
 
   begin_measurement(2u);
-  end_measurement(2u, app_measure_mode2(hz, samples));
+  end_measurement(2u, app_measure_mode2(hz, samples, raw_dump));
 }
 
 /**
@@ -321,7 +368,15 @@ static void handle_mode3(char **cursor) {
     log_error("PARAM");
     return;
   }
-  if (!valid_step_hz(hz) || samples == 0u || samples > 10000u) {
+  if ((hz != 0u && !valid_step_hz(hz)) || samples == 0u) {
+    log_error("PARAM");
+    return;
+  }
+  if (hz == 0u && samples > APP_MAX_DURATION_MS) {
+    log_error("PARAM");
+    return;
+  }
+  if (hz != 0u && samples > 10000u) {
     log_error("PARAM");
     return;
   }
@@ -338,11 +393,9 @@ static void handle_mode3(char **cursor) {
  *
  * @param cursor Parser position immediately after the mode name.
  * @param cmd_len Length of the received command line in bytes.
- * @param rx_cycles DWT timestamp captured when the command line arrived.
  * @return None.
  */
-static void handle_mode4(char **cursor, uint32_t cmd_len,
-                         uint32_t rx_cycles) {
+static void handle_mode4(char **cursor, uint32_t cmd_len) {
   uint32_t trials = DEFAULT_MODE4_TRIALS;
   bool present;
 
@@ -360,7 +413,7 @@ static void handle_mode4(char **cursor, uint32_t cmd_len,
   }
 
   begin_measurement(4u);
-  end_measurement(4u, app_measure_mode4(trials, cmd_len, rx_cycles));
+  end_measurement(4u, app_measure_mode4(trials, cmd_len));
 }
 
 /**
@@ -419,10 +472,9 @@ static void handle_mode5(char **cursor) {
  * extra arguments are reported consistently.
  *
  * @param line Null-terminated command line to parse; modified in place.
- * @param rx_cycles DWT timestamp captured when the line was received.
  * @return None.
  */
-static void handle_command(char *line, uint32_t rx_cycles) {
+static void handle_command(char *line) {
   uint32_t cmd_len = (uint32_t)strlen(line);
   char *cursor = line;
   char *command = next_token(&cursor);
@@ -443,7 +495,7 @@ static void handle_command(char *line, uint32_t rx_cycles) {
   } else if (strcmp(command, "mode3") == 0) {
     handle_mode3(&cursor);
   } else if (strcmp(command, "mode4") == 0) {
-    handle_mode4(&cursor, cmd_len, rx_cycles);
+    handle_mode4(&cursor, cmd_len);
   } else if (strcmp(command, "mode5") == 0) {
     handle_mode5(&cursor);
   } else {
@@ -488,8 +540,10 @@ void app_control_loop(void) {
   }
 
   char line[96];
-  uint32_t rx_cycles;
-  if (platform_uart_read_line(line, sizeof(line), &rx_cycles)) {
-    handle_command(line, rx_cycles);
+  if (platform_uart_read_line(line, sizeof(line), 0)) {
+    handle_command(line);
+    return;
   }
+
+  platform_cpu_wait_for_event();
 }

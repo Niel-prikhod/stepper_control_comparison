@@ -10,7 +10,7 @@ target_compile_definitions(firmware PRIVATE
   APP_BOARD="${BOARD_NAME}"
   APP_MCU="${BOARD_MCU}"
 )
-target_link_libraries(firmware PRIVATE motor encoder platform::platform)
+target_link_libraries(firmware PRIVATE motor encoder platform::platform m)
 set_target_properties(firmware PROPERTIES LINK_DEPENDS "${BOARD_LINKER_SCRIPT}")
 target_link_options(firmware PRIVATE -Wl,-Map=${CMAKE_BINARY_DIR}/firmware.map)
 

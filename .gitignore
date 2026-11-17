@@ -15,4 +15,6 @@ log_*
 **/__pycache__
 logs/
 results/
-docs/firmware-architecture.pdf
+**/*.pdf
+.github/
+docs/firmware-architecture*

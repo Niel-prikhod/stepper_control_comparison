@@ -3,15 +3,22 @@
 #include <app/status.h>
 #include <drivers/encoder/encoder.h>
 #include <drivers/motor/stepper.h>
+#include <platform/cpu.h>
 #include <platform/dwt.h>
 #include <platform/log.h>
 #include <platform/stepper.h>
 #include <platform/timer.h>
 #include <platform/uart.h>
 
+#include <math.h>
+#include <string.h>
+
 #define MODE5_STEPS_PER_POINT 200u
 #define MODE5_TOLERANCE_STEPS 2u
 #define MODE5_RAMP_STEPS 50u
+#define MODE4_PERIOD_US 100u
+#define MODE4_TRIGGER_TIMEOUT_US 10000u
+#define MODE4_STEP_TIMEOUT_US 1000u
 #define STALL_TIMEOUT_US 2000000u
 
 static volatile bool s_done;
@@ -28,13 +35,17 @@ static volatile uint32_t s_ramp_steps;
 static volatile uint32_t s_step_target;
 static volatile uint32_t s_step_index;
 static volatile uint8_t s_condition;
+static volatile bool s_latency_armed;
 static volatile uint32_t s_latency_first;
 
 static uint32_t s_stat_n;
-static int64_t s_stat_mean;
-static int64_t s_stat_m2;
+static float s_stat_mean;
+static float s_stat_m2;
 static uint32_t s_stat_min;
 static uint32_t s_stat_max;
+static bool s_mode2_raw_dump;
+static uint32_t s_mode2_raw[APP_MAX_RAW_SAMPLES];
+static uint32_t s_latency_samples[APP_MAX_TRIALS];
 
 /**
  * @brief Convert a step frequency to a timer period.
@@ -145,26 +156,27 @@ static bool wait_progress(volatile uint32_t *progress, uint32_t stall_us) {
  */
 static void stats_reset(void) {
   s_stat_n = 0u;
-  s_stat_mean = 0;
-  s_stat_m2 = 0;
+  s_stat_mean = 0.0f;
+  s_stat_m2 = 0.0f;
   s_stat_min = 0xFFFFFFFFu;
   s_stat_max = 0u;
 }
 
 /**
- * @brief Add one value to the streaming interval statistics.
+ * @brief Add one DWT cycle interval to the floating-point statistics.
  *
- * Why: Updates mean, variance accumulator, minimum, and maximum in constant
- * memory, which keeps the ISR path lightweight.
+ * Why: Mode 2 must keep raw DWT cycles until the final variance calculation;
+ * converting to microseconds first would hide sub-microsecond jitter.
  *
- * @param value Interval or latency sample to add.
+ * @param value Interval in DWT cycles.
  * @return None.
  */
 static void stats_add(uint32_t value) {
   s_stat_n++;
-  int64_t delta = (int64_t)value - s_stat_mean;
-  s_stat_mean += delta / (int64_t)s_stat_n;
-  s_stat_m2 += delta * ((int64_t)value - s_stat_mean);
+  float x = (float)value;
+  float delta = x - s_stat_mean;
+  s_stat_mean += delta / (float)s_stat_n;
+  s_stat_m2 += delta * (x - s_stat_mean);
   if (value < s_stat_min) {
     s_stat_min = value;
   }
@@ -174,26 +186,60 @@ static void stats_add(uint32_t value) {
 }
 
 /**
- * @brief Compute the integer square root of a 64-bit value.
+ * @brief Return the sample standard deviation of the streaming values.
  *
- * Why: Standard deviation needs a square root, but the firmware avoids linking
- * the floating-point math library for a small integer calculation.
+ * Why: The requested statistics use the n-1 denominator and floating-point
+ * math; a zero result is valid when every sample is identical.
  *
- * @param value Non-negative value to take the square root of.
- * @return Floor of the square root.
+ * @return Sample standard deviation in DWT cycles.
  */
-static uint32_t isqrt64(uint64_t value) {
-  uint64_t low = 0u;
-  uint64_t high = 0xFFFFFFFFULL;
-  while (low < high) {
-    uint64_t mid = (low + high + 1u) / 2u;
-    if (mid <= value / mid) {
-      low = mid;
-    } else {
-      high = mid - 1u;
-    }
+static float stats_sigma(void) {
+  if (s_stat_n < 2u) {
+    return 0.0f;
   }
-  return (uint32_t)low;
+  float variance = s_stat_m2 / (float)(s_stat_n - 1u);
+  return variance > 0.0f ? sqrtf(variance) : 0.0f;
+}
+
+/**
+ * @brief Convert a non-negative float to a rounded uint32_t.
+ *
+ * Why: Logs use integer scaled values because the nano printf build does not
+ * enable floating-point formatting.
+ *
+ * @param value Value to convert.
+ * @return Rounded value, saturated at UINT32_MAX.
+ */
+static uint32_t float_to_u32(float value) {
+  if (value <= 0.0f) {
+    return 0u;
+  }
+  if (value >= 4294967295.0f) {
+    return 0xFFFFFFFFu;
+  }
+  return (uint32_t)(value + 0.5f);
+}
+
+/**
+ * @brief Sort uint32 values in ascending order.
+ *
+ * Why: Mode 4 needs a nearest-rank p99 from the latency buffer; 100 samples
+ * make a small insertion sort cheaper than pulling in a general sort library.
+ *
+ * @param values Array to sort in place.
+ * @param count Number of entries in the array.
+ * @return None.
+ */
+static void sort_u32(uint32_t *values, uint32_t count) {
+  for (uint32_t i = 1u; i < count; i++) {
+    uint32_t value = values[i];
+    uint32_t j = i;
+    while (j > 0u && values[j - 1u] > value) {
+      values[j] = values[j - 1u];
+      j--;
+    }
+    values[j] = value;
+  }
 }
 
 /**
@@ -317,8 +363,8 @@ bool app_measure_mode1(uint32_t target_hz, uint32_t duration_ms) {
 /**
  * @brief Step the motor and collect mode 2 interval samples.
  *
- * Why: Mode 2 needs per-interval timing data from the timer ISR while keeping
- * the statistics work bounded and allocation-free.
+ * Why: Mode 2 needs raw DWT cycle deltas from the timer ISR so variance is
+ * computed before any microsecond truncation.
  *
  * @param timestamp_cycles DWT timestamp captured at ISR entry.
  * @param period_cycles Measured timer period in DWT cycles.
@@ -337,11 +383,10 @@ static bool mode2_callback(uint32_t timestamp_cycles,
 
   s_count++;
   s_last_ts = timestamp_cycles;
-  uint32_t interval_us = platform_dwt_cycles_to_us(period_cycles);
-  if (interval_us == 0u) {
-    interval_us = 1u;
+  stats_add(period_cycles);
+  if (s_mode2_raw_dump && s_samples < APP_MAX_RAW_SAMPLES) {
+    s_mode2_raw[s_samples] = period_cycles;
   }
-  stats_add(interval_us);
   s_samples++;
 
   if (s_samples >= s_target_samples) {
@@ -351,7 +396,13 @@ static bool mode2_callback(uint32_t timestamp_cycles,
   return true;
 }
 
-bool app_measure_mode2(uint32_t target_hz, uint32_t samples) {
+bool app_measure_mode2(uint32_t target_hz, uint32_t samples, bool raw_dump) {
+  if (raw_dump && samples > APP_MAX_RAW_SAMPLES) {
+    platform_log("error=limit raw_max=%lu\r\n",
+                 (unsigned long)APP_MAX_RAW_SAMPLES);
+    return false;
+  }
+
   s_done = false;
   s_count = 0u;
   s_samples = 0u;
@@ -359,6 +410,7 @@ bool app_measure_mode2(uint32_t target_hz, uint32_t samples) {
   s_target_hz = target_hz;
   s_first_ts = 0u;
   s_last_ts = 0u;
+  s_mode2_raw_dump = raw_dump;
   stats_reset();
 
   if (!platform_step_timer_start(hz_to_period_us(target_hz), mode2_callback)) {
@@ -374,24 +426,29 @@ bool app_measure_mode2(uint32_t target_hz, uint32_t samples) {
     return false;
   }
 
-  uint32_t mean_us = (uint32_t)s_stat_mean;
-  uint32_t p2p_us = s_stat_max - s_stat_min;
-  uint64_t jitter_milli_pct64 =
-      mean_us == 0u
-          ? 0u
-          : (((uint64_t)p2p_us * 100000ULL) / mean_us);
-  uint32_t jitter_milli_pct =
-      jitter_milli_pct64 > 0xFFFFFFFFULL
-          ? 0xFFFFFFFFu
-          : (uint32_t)jitter_milli_pct64;
-  int64_t variance = s_stat_m2;
-  if (variance < 0) {
-    variance = 0;
-  }
-  uint32_t stddev_us =
-      s_stat_n > 1u ? isqrt64((uint64_t)variance / (s_stat_n - 1u)) : 0u;
+  float dwt_hz = (float)platform_dwt_hz();
+  float mean_cycles = s_stat_mean;
+  float sigma_cycles = stats_sigma();
+  float mean_ns_f = mean_cycles * 1000000000.0f / dwt_hz;
+  float sigma_ns_f = sigma_cycles * 1000000000.0f / dwt_hz;
+  float min_ns_f = (float)s_stat_min * 1000000000.0f / dwt_hz;
+  float max_ns_f = (float)s_stat_max * 1000000000.0f / dwt_hz;
+  float p2p_ns_f = (float)(s_stat_max - s_stat_min) * 1000000000.0f / dwt_hz;
+  uint32_t mean_ns = float_to_u32(mean_ns_f);
+  uint32_t sigma_milli_ns = float_to_u32(sigma_ns_f * 1000.0f);
+  uint32_t min_ns = float_to_u32(min_ns_f);
+  uint32_t max_ns = float_to_u32(max_ns_f);
+  uint32_t p2p_ns = float_to_u32(p2p_ns_f);
+  uint32_t mean_us = mean_ns / 1000u;
+  uint32_t p2p_us = p2p_ns / 1000u;
   uint32_t measured_milli =
-      mean_us == 0u ? 0u : (uint32_t)(1000000000ULL / mean_us);
+      mean_cycles > 0.0f
+          ? float_to_u32((dwt_hz / mean_cycles) * 1000.0f)
+          : 0u;
+  uint32_t jitter_milli_pct =
+      mean_ns == 0u
+          ? 0u
+          : float_to_u32(((float)p2p_ns * 100000.0f) / (float)mean_ns);
 
   platform_log("mode=2\r\n");
   platform_log("target_hz=%lu\r\n", (unsigned long)target_hz);
@@ -399,15 +456,31 @@ bool app_measure_mode2(uint32_t target_hz, uint32_t samples) {
                (unsigned long)(measured_milli / 1000u),
                (unsigned long)(measured_milli % 1000u));
   platform_log("samples=%lu\r\n", (unsigned long)s_stat_n);
+  platform_log("mean_ns=%lu\r\n", (unsigned long)mean_ns);
+  platform_log("sigma_ns=%lu.%03lu\r\n",
+               (unsigned long)(sigma_milli_ns / 1000u),
+               (unsigned long)(sigma_milli_ns % 1000u));
+  platform_log("min_ns=%lu\r\n", (unsigned long)min_ns);
+  platform_log("max_ns=%lu\r\n", (unsigned long)max_ns);
+  platform_log("p2p_ns=%lu\r\n", (unsigned long)p2p_ns);
   platform_log("mean_interval_us=%lu\r\n", (unsigned long)mean_us);
-  platform_log("stddev_us=%lu\r\n", (unsigned long)stddev_us);
-  platform_log("min_interval_us=%lu\r\n", (unsigned long)s_stat_min);
-  platform_log("max_interval_us=%lu\r\n", (unsigned long)s_stat_max);
+  platform_log("stddev_us=%lu.%03lu\r\n",
+               (unsigned long)(sigma_milli_ns / 1000000u),
+               (unsigned long)((sigma_milli_ns / 1000u) % 1000u));
+  platform_log("min_interval_us=%lu\r\n", (unsigned long)(min_ns / 1000u));
+  platform_log("max_interval_us=%lu\r\n", (unsigned long)(max_ns / 1000u));
   platform_log("p2p_jitter_us=%lu\r\n", (unsigned long)p2p_us);
   platform_log("jitter_pct=%lu.%03lu\r\n",
                (unsigned long)(jitter_milli_pct / 1000u),
                (unsigned long)(jitter_milli_pct % 1000u));
   platform_log("clock_hz=%lu\r\n", (unsigned long)platform_dwt_hz());
+
+  if (raw_dump) {
+    platform_log("raw_count=%lu\r\n", (unsigned long)s_stat_n);
+    for (uint32_t i = 0u; i < s_stat_n && i < APP_MAX_RAW_SAMPLES; i++) {
+      platform_log("%lu\r\n", (unsigned long)s_mode2_raw[i]);
+    }
+  }
   return true;
 }
 
@@ -518,6 +591,14 @@ static void log_condition(const char *name,
       stats->period_cycles == 0u
           ? 0u
           : (uint32_t)((stats->isr_cycles * 100000ULL) / stats->period_cycles);
+  uint32_t mean_period_cycles =
+      stats->isr_count == 0u ? 0u : (uint32_t)(stats->period_cycles /
+                                                stats->isr_count);
+  uint32_t peak_load_milli =
+      mean_period_cycles == 0u
+          ? 0u
+          : (uint32_t)(((uint64_t)stats->peak_isr_cycles * 100000ULL) /
+                       mean_period_cycles);
   uint32_t peak_us = platform_dwt_cycles_to_us(stats->peak_isr_cycles);
   char isr_cycles[21];
   char period_cycles[21];
@@ -529,6 +610,9 @@ static void log_condition(const char *name,
   platform_log("load_pct=%lu.%03lu\r\n",
                (unsigned long)(load_milli / 1000u),
                (unsigned long)(load_milli % 1000u));
+  platform_log("peak_load_pct=%lu.%03lu\r\n",
+               (unsigned long)(peak_load_milli / 1000u),
+               (unsigned long)(peak_load_milli % 1000u));
   platform_log("isr_count=%lu\r\n", (unsigned long)stats->isr_count);
   platform_log("isr_cycles=%s\r\n", isr_cycles);
   platform_log("period_cycles=%s\r\n", period_cycles);
@@ -537,7 +621,127 @@ static void log_condition(const char *name,
   platform_log("peak_isr_us=%lu\r\n", (unsigned long)peak_us);
 }
 
+/**
+ * @brief Measure timer-free idle load and main-loop iteration time.
+ *
+ * Why: Mode 3 must distinguish timer ISR load from the background main loop.
+ * With no step timer running, the timer load is zero; the useful number is how
+ * long one command/status service iteration takes.
+ *
+ * @param duration_ms Measurement window in milliseconds.
+ * @return true when the window completed; false for an invalid duration.
+ */
+static bool app_measure_mode3_idle(uint32_t duration_ms) {
+  if (duration_ms == 0u) {
+    return false;
+  }
+
+  uint64_t target_cycles64 =
+      ((uint64_t)duration_ms * platform_dwt_hz()) / 1000ULL;
+  uint32_t target_cycles =
+      target_cycles64 > 0xFFFFFFFFULL ? 0xFFFFFFFFu
+                                      : (uint32_t)target_cycles64;
+  uint32_t start = platform_dwt_read();
+  uint32_t now = start;
+  uint32_t iterations = 0u;
+  uint64_t busy_cycles = 0u;
+  uint32_t peak_busy_cycles = 0u;
+
+  do {
+    uint32_t busy_start = platform_dwt_read();
+    app_status_service();
+    service_busy();
+    uint32_t busy_end = platform_dwt_read();
+    uint32_t iter_busy_cycles = (uint32_t)(busy_end - busy_start);
+
+    platform_cpu_wait_for_event();
+
+    uint32_t idle_end = platform_dwt_read();
+
+    busy_cycles += iter_busy_cycles;
+    if (iter_busy_cycles > peak_busy_cycles) {
+      peak_busy_cycles = iter_busy_cycles;
+    }
+    iterations++;
+    now = idle_end;
+  } while ((uint32_t)(now - start) < target_cycles);
+
+  uint32_t total_cycles = (uint32_t)(now - start);
+  uint64_t idle_cycles =
+      busy_cycles < total_cycles ? (uint64_t)total_cycles - busy_cycles : 0u;
+  uint32_t busy_milli =
+      total_cycles == 0u
+          ? 0u
+          : (uint32_t)((busy_cycles * 100000ULL) / total_cycles);
+  uint32_t idle_milli =
+      total_cycles == 0u
+          ? 0u
+          : (uint32_t)((idle_cycles * 100000ULL) / total_cycles);
+  uint32_t mean_total_cycles =
+      iterations == 0u ? 0u : total_cycles / iterations;
+  uint32_t peak_load_milli =
+      mean_total_cycles == 0u
+          ? 0u
+          : (uint32_t)(((uint64_t)peak_busy_cycles * 100000ULL) /
+                       mean_total_cycles);
+  if (peak_load_milli > 100000u) {
+    peak_load_milli = 100000u;
+  }
+  uint32_t main_loop_iteration_ns =
+      iterations == 0u
+          ? 0u
+          : (uint32_t)(((uint64_t)total_cycles * 1000000000ULL) /
+                       ((uint64_t)iterations * platform_dwt_hz()));
+  char idle_cycles_dec[21];
+  char total_cycles_dec[21];
+  char busy_cycles_dec[21];
+  u64_to_dec(idle_cycles, idle_cycles_dec, sizeof(idle_cycles_dec));
+  u64_to_dec(total_cycles, total_cycles_dec, sizeof(total_cycles_dec));
+  u64_to_dec(busy_cycles, busy_cycles_dec, sizeof(busy_cycles_dec));
+
+  platform_log("mode=3\r\n");
+  platform_log("target_hz=0\r\n");
+  platform_log("duration_ms=%lu\r\n", (unsigned long)duration_ms);
+  platform_log("samples=0\r\n");
+  platform_log("clock_hz=%lu\r\n", (unsigned long)platform_dwt_hz());
+  platform_log("condition=idle\r\n");
+  platform_log("load_pct=%lu.%03lu\r\n",
+               (unsigned long)(busy_milli / 1000u),
+               (unsigned long)(busy_milli % 1000u));
+  platform_log("busy_pct=%lu.%03lu\r\n",
+               (unsigned long)(busy_milli / 1000u),
+               (unsigned long)(busy_milli % 1000u));
+  platform_log("idle_pct=%lu.%03lu\r\n",
+               (unsigned long)(idle_milli / 1000u),
+               (unsigned long)(idle_milli % 1000u));
+  platform_log("peak_load_pct=%lu.%03lu\r\n",
+               (unsigned long)(peak_load_milli / 1000u),
+               (unsigned long)(peak_load_milli % 1000u));
+  platform_log("wfe_present=yes\r\n");
+  platform_log("wfe_scope=main_loop+idle\r\n");
+  platform_log("isr_count=0\r\n");
+  platform_log("isr_cycles=0\r\n");
+  platform_log("period_cycles=%s\r\n", total_cycles_dec);
+  platform_log("idle_cycles=%s\r\n", idle_cycles_dec);
+  platform_log("busy_cycles=%s\r\n", busy_cycles_dec);
+  platform_log("total_cycles=%s\r\n", total_cycles_dec);
+  platform_log("iterations=%lu\r\n", (unsigned long)iterations);
+  platform_log("main_loop_iteration_us=%lu.%03lu\r\n",
+               (unsigned long)(main_loop_iteration_ns / 1000u),
+               (unsigned long)(main_loop_iteration_ns % 1000u));
+  platform_log("main_loop_mean_us=%lu.%03lu\r\n",
+               (unsigned long)(main_loop_iteration_ns / 1000u),
+               (unsigned long)(main_loop_iteration_ns % 1000u));
+  platform_log("peak_isr_cycles=0\r\n");
+  platform_log("peak_isr_us=0\r\n");
+  return true;
+}
+
 bool app_measure_mode3(uint32_t target_hz, uint32_t samples) {
+  if (target_hz == 0u) {
+    return app_measure_mode3_idle(samples);
+  }
+
   uint32_t ramp_start_hz = target_hz / 10u;
   if (ramp_start_hz < APP_MIN_STEP_HZ) {
     ramp_start_hz = APP_MIN_STEP_HZ;
@@ -575,83 +779,136 @@ bool app_measure_mode3(uint32_t target_hz, uint32_t samples) {
 }
 
 /**
- * @brief Perform the first mode 4 step and stop the timer.
+ * @brief Perform one mode 4 step without stopping the free-running timer.
  *
- * Why: Mode 4 needs a single timer-triggered step so it can measure the time
- * from command processing to the first motor action.
+ * Why: Mode 4 needs one timer-triggered step per trial while the timer phase
+ * remains continuous across the whole command.
  *
  * @param timestamp_cycles DWT timestamp captured at ISR entry; unused.
  * @param period_cycles Measured timer period; unused.
- * @return false, because mode 4 only needs one step per trial.
+ * @return true, so the timer keeps running between trials.
  */
 static bool mode4_callback(uint32_t timestamp_cycles,
                            uint32_t period_cycles) {
   (void)timestamp_cycles;
   (void)period_cycles;
+
+  if (!s_latency_armed) {
+    return true;
+  }
+
   (void)stepper_advance(1);
   s_latency_first = platform_dwt_read();
+  s_latency_armed = false;
   s_count++;
-  s_done = true;
-  return false;
+  return true;
 }
 
-bool app_measure_mode4(uint32_t trials, uint32_t cmd_len,
-                       uint32_t initial_rx_cycles) {
+static bool wait_mode4_trigger(uint32_t *t_start, uint32_t timeout_us) {
+  uint32_t start = platform_dwt_read();
+  uint32_t timeout = us_to_cycles(timeout_us);
+
+  while (true) {
+    app_status_service();
+
+    char line[96];
+    uint32_t rx_cycles;
+    if (platform_uart_read_line(line, sizeof(line), &rx_cycles)) {
+      if (strcmp(line, "t") == 0) {
+        *t_start = rx_cycles;
+        return true;
+      }
+      platform_log("ERR BUSY\r\n");
+    }
+
+    if ((uint32_t)(platform_dwt_read() - start) > timeout) {
+      return false;
+    }
+  }
+}
+
+bool app_measure_mode4(uint32_t trials, uint32_t cmd_len) {
   stats_reset();
-  uint32_t first_uart_latency_us = 0u;
+  s_count = 0u;
+  s_latency_armed = false;
+
+  if (!platform_step_timer_start_free_running(MODE4_PERIOD_US,
+                                              mode4_callback)) {
+    platform_log("error=timer\r\n");
+    return false;
+  }
 
   for (uint32_t trial = 0u; trial < trials; trial++) {
-    s_done = false;
-    s_count = 0u;
+    uint32_t t_start = 0u;
+    if (!wait_mode4_trigger(&t_start, MODE4_TRIGGER_TIMEOUT_US)) {
+      stop_output();
+      platform_log("error=trigger_timeout\r\n");
+      return false;
+    }
+
     s_latency_first = 0u;
-    uint32_t command_ts = platform_dwt_read();
+    s_latency_armed = true;
 
-    if (!platform_step_timer_start(100u, mode4_callback)) {
-      platform_log("error=timer\r\n");
-      return false;
+    uint32_t wait_start = platform_dwt_read();
+    uint32_t timeout = us_to_cycles(MODE4_STEP_TIMEOUT_US);
+    while (s_latency_first == 0u) {
+      if ((uint32_t)(platform_dwt_read() - wait_start) > timeout) {
+        s_latency_armed = false;
+        stop_output();
+        platform_log("error=step_timeout\r\n");
+        return false;
+      }
     }
 
-    bool ok = wait_progress(&s_count, 1000000u);
-    stop_output();
-    if (!ok || s_count == 0u) {
-      platform_log("error=timeout\r\n");
-      return false;
-    }
-
-    uint32_t latency_us =
-        platform_dwt_cycles_to_us((uint32_t)(s_latency_first - command_ts));
-    stats_add(latency_us);
-
-    if (trial == 0u) {
-      first_uart_latency_us = platform_dwt_cycles_to_us(
-          (uint32_t)(s_latency_first - initial_rx_cycles));
-    }
-
-    if (trial + 1u < trials) {
-      platform_delay_us(1000u);
-    }
+    uint32_t latency_cycles = (uint32_t)(s_latency_first - t_start);
+    s_latency_samples[trial] = latency_cycles;
+    stats_add(latency_cycles);
   }
 
-  uint32_t mean_us = (uint32_t)s_stat_mean;
-  int64_t variance = s_stat_m2;
-  if (variance < 0) {
-    variance = 0;
+  stop_output();
+
+  float dwt_hz = (float)platform_dwt_hz();
+  float mean_us_f = (s_stat_mean * 1000000.0f) / dwt_hz;
+  float sigma_cycles = stats_sigma();
+  float sigma_us_f = (sigma_cycles * 1000000.0f) / dwt_hz;
+  float min_us_f = ((float)s_stat_min * 1000000.0f) / dwt_hz;
+  float max_us_f = ((float)s_stat_max * 1000000.0f) / dwt_hz;
+
+  uint32_t sorted_samples[APP_MAX_TRIALS];
+  for (uint32_t i = 0u; i < s_stat_n && i < APP_MAX_TRIALS; i++) {
+    sorted_samples[i] = s_latency_samples[i];
   }
-  uint32_t stddev_us =
-      s_stat_n > 1u ? isqrt64((uint64_t)variance / (s_stat_n - 1u)) : 0u;
+  sort_u32(sorted_samples, s_stat_n);
+  uint32_t p99_index =
+      s_stat_n == 0u ? 0u : (((s_stat_n * 99u) + 99u) / 100u) - 1u;
+  float p99_us_f =
+      ((float)sorted_samples[p99_index] * 1000000.0f) / dwt_hz;
+
+  uint32_t mean_us = float_to_u32(mean_us_f);
+  uint32_t sigma_us_milli = float_to_u32(sigma_us_f * 1000.0f);
+  uint32_t min_us = float_to_u32(min_us_f);
+  uint32_t max_us = float_to_u32(max_us_f);
+  uint32_t p99_us = float_to_u32(p99_us_f);
 
   platform_log("mode=4\r\n");
   platform_log("num_trials=%lu\r\n", (unsigned long)s_stat_n);
   platform_log("baud=%lu\r\n", (unsigned long)platform_uart_baud());
   platform_log("cmd_len=%lu\r\n", (unsigned long)cmd_len);
-  platform_log("latency_ref=cmd_process\r\n");
-  platform_log("uart_rx_to_first_step_us=%lu\r\n",
-               (unsigned long)first_uart_latency_us);
+  platform_log("timer_period_us=%lu\r\n", (unsigned long)MODE4_PERIOD_US);
+  platform_log("latency_ref=uart_first_byte_to_first_step_gpio\r\n");
   platform_log("mean_us=%lu\r\n", (unsigned long)mean_us);
-  platform_log("stddev_us=%lu\r\n", (unsigned long)stddev_us);
-  platform_log("min_us=%lu\r\n", (unsigned long)s_stat_min);
-  platform_log("max_us=%lu\r\n", (unsigned long)s_stat_max);
+  platform_log("sigma_us=%lu.%03lu\r\n",
+               (unsigned long)(sigma_us_milli / 1000u),
+               (unsigned long)(sigma_us_milli % 1000u));
+  platform_log("stddev_us=%lu\r\n", (unsigned long)(sigma_us_milli / 1000u));
+  platform_log("min_us=%lu\r\n", (unsigned long)min_us);
+  platform_log("max_us=%lu\r\n", (unsigned long)max_us);
+  platform_log("p99_us=%lu\r\n", (unsigned long)p99_us);
   platform_log("clock_hz=%lu\r\n", (unsigned long)platform_dwt_hz());
+  platform_log("raw_count=%lu\r\n", (unsigned long)s_stat_n);
+  for (uint32_t i = 0u; i < s_stat_n; i++) {
+    platform_log("%lu\r\n", (unsigned long)s_latency_samples[i]);
+  }
   return true;
 }
 

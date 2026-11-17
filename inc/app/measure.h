@@ -15,10 +15,12 @@ extern "C" {
 #define APP_MAX_DURATION_MS 20000u
 /** Largest accepted mode 2 sample count. */
 #define APP_MAX_SAMPLES 100000u
-/** Largest accepted mode 4 trial count. */
-#define APP_MAX_TRIALS 10000u
+/** Largest accepted mode 4 trial count; mode 4 buffers every sample. */
+#define APP_MAX_TRIALS 100u
 /** Largest accepted mode 5 frequency-point count. */
 #define APP_MAX_MODE5_POINTS 100u
+/** Largest mode 2 raw dump supported by the RAM buffer. */
+#define APP_MAX_RAW_SAMPLES 100u
 /** Motor steps per revolution used by the measurement application. */
 #define APP_STEPS_PER_REV 2048u
 
@@ -53,10 +55,12 @@ bool app_measure_mode1(uint32_t target_hz, uint32_t duration_ms);
  *
  * @param target_hz Requested step frequency in Hz.
  * @param samples Number of timer intervals to collect after the first step.
+ * @param raw_dump When true, emit the raw DWT inter-step deltas after the
+ *        summary. The dump is limited to APP_MAX_RAW_SAMPLES values.
  * @return true when the requested number of samples was collected; false on
  *         timer start, stall, or timeout failure.
  */
-bool app_measure_mode2(uint32_t target_hz, uint32_t samples);
+bool app_measure_mode2(uint32_t target_hz, uint32_t samples, bool raw_dump);
 
 /**
  * @brief Measure timer ISR load in idle, constant, and ramp conditions.
@@ -64,10 +68,12 @@ bool app_measure_mode2(uint32_t target_hz, uint32_t samples);
  * Why: Quantifies the CPU cost of the step timer interrupt and shows how motor
  * stepping and timer-period changes affect that cost.
  *
- * @param target_hz Requested step frequency in Hz for the constant condition.
- * @param samples Number of timer interrupts to collect per condition.
- * @return true when all three conditions completed; false if any condition
- *         stalls or times out.
+ * @param target_hz Requested step frequency in Hz. Zero runs the timer-free
+ *        idle measurement.
+ * @param samples Number of timer interrupts per condition, or duration in
+ *        milliseconds when @p target_hz is zero.
+ * @return true when the requested conditions completed; false on a stall or
+ *         timeout.
  */
 bool app_measure_mode3(uint32_t target_hz, uint32_t samples);
 
@@ -77,15 +83,12 @@ bool app_measure_mode3(uint32_t target_hz, uint32_t samples);
  * Why: Estimates control-loop and UART handling overhead when a command starts
  * motor motion.
  *
- * @param trials Number of start/stop latency trials to run.
+ * @param trials Number of latency trials to run.
  * @param cmd_len Length of the received command line, in bytes.
- * @param initial_rx_cycles DWT timestamp captured when the command line was
- *        received; used for the first-trial UART-to-step measurement.
  * @return true when every trial produced a first step; false on timer start,
- *         stall, or timeout failure.
+ *         trigger timeout, step timeout, or stall failure.
  */
-bool app_measure_mode4(uint32_t trials, uint32_t cmd_len,
-                       uint32_t initial_rx_cycles);
+bool app_measure_mode4(uint32_t trials, uint32_t cmd_len);
 
 /**
  * @brief Sweep step frequency and verify rotation with encoder feedback.
