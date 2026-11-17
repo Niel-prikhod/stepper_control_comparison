@@ -3,8 +3,11 @@ target_include_directories(platform_if INTERFACE ${PROJECT_SOURCE_DIR}/inc)
 
 add_library(platform_stm32 STATIC
   stm32/stm32_platform_stepper.c
+  stm32/stm32_platform_dwt.c
   stm32/stm32_platform_i2c.c
   stm32/stm32_platform_log.c
+  stm32/stm32_platform_timer.c
+  stm32/stm32_platform_uart.c
 )
 target_link_libraries(platform_stm32 PUBLIC platform_if)
 

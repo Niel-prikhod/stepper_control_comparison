@@ -1,11 +1,15 @@
+#include <platform/dwt.h>
 #include <platform/i2c.h>
 #include <platform/log.h>
 #include <platform/stepper.h>
+#include <platform/timer.h>
+#include <platform/uart.h>
 
 #if __has_include("main.h")
 #define PLATFORM_HAVE_HAL 1
 #include "main.h"
 #include "gpio.h"
+/** CubeMX-generated clock setup; called once from platform_init(). */
 extern void SystemClock_Config(void);
 #else
 #define PLATFORM_HAVE_HAL 0
@@ -19,6 +23,17 @@ extern void SystemClock_Config(void);
 #define MOTOR_D_Pin 0
 #define GPIO_PIN_SET 1
 #define GPIO_PIN_RESET 0
+/**
+ * @brief No-op GPIO write used by shim builds.
+ *
+ * Why: Keeps the platform adapter linkable when CubeMX GPIO definitions are
+ * absent, while making the missing hardware support explicit.
+ *
+ * @param port Ignored GPIO port identifier.
+ * @param pin Ignored GPIO pin identifier.
+ * @param state Ignored output state.
+ * @return None.
+ */
 static inline void HAL_GPIO_WritePin(int port, int pin, int state) {
   (void)port;
   (void)pin;
@@ -32,8 +47,11 @@ void platform_init(void) {
   SystemClock_Config();
   MX_GPIO_Init();
   BSP_LED_Init(LED2);
+  platform_dwt_init();
   platform_i2c_init();
   platform_log_init();
+  platform_uart_init();
+  platform_step_timer_init();
 #endif
 }
 
@@ -56,7 +74,9 @@ void platform_delay_us(uint32_t us) {
 #if PLATFORM_HAVE_HAL
   if (us >= 1000U) {
     HAL_Delay(us / 1000U);
-  } else {
+    us %= 1000U;
+  }
+  if (us > 0U) {
     uint32_t n = us * (HAL_RCC_GetHCLKFreq() / 1000000UL / 5UL);
     for (volatile uint32_t i = 0; i < n; i++) {
       __asm__ volatile("nop");
@@ -66,6 +86,18 @@ void platform_delay_us(uint32_t us) {
   for (volatile uint32_t i = 0; i < us * 10UL; i++) {
     __asm__ volatile("nop");
   }
+#endif
+}
+
+void platform_led_set(bool on) {
+#if PLATFORM_HAVE_HAL
+  if (on) {
+    BSP_LED_On(LED2);
+  } else {
+    BSP_LED_Off(LED2);
+  }
+#else
+  (void)on;
 #endif
 }
 

@@ -19,6 +19,14 @@ static volatile uint32_t s_last_error;
 static volatile uint32_t s_last_state;
 static uint8_t s_addr;
 
+/**
+ * @brief Reinitialize I2C1 after a timeout or bus error.
+ *
+ * Why: A stuck DMA or bus state would otherwise make every later encoder read
+ * fail until reset.
+ *
+ * @return None.
+ */
 static void platform_i2c_recover(void) {
   HAL_NVIC_DisableIRQ(I2C1_EV_IRQn);
   HAL_NVIC_DisableIRQ(I2C1_ER_IRQn);
@@ -195,14 +203,39 @@ uint32_t platform_i2c_last_state(void) {
 }
 
 #if PLATFORM_HAVE_HAL
+/**
+ * @brief Forward I2C1 event interrupts to the HAL.
+ *
+ * Why: The HAL state machine for DMA register reads needs its event interrupt
+ * serviced promptly.
+ *
+ * @return None.
+ */
 void I2C1_EV_IRQHandler(void) {
   HAL_I2C_EV_IRQHandler(&hi2c1);
 }
 
+/**
+ * @brief Forward I2C1 error interrupts to the HAL.
+ *
+ * Why: Bus errors must be observed by the HAL so its error callback can update
+ * the platform error state.
+ *
+ * @return None.
+ */
 void I2C1_ER_IRQHandler(void) {
   HAL_I2C_ER_IRQHandler(&hi2c1);
 }
 
+/**
+ * @brief Mark a DMA register read complete.
+ *
+ * Why: The non-blocking read API needs a clear completion signal independent of
+ * HAL polling.
+ *
+ * @param hi2c HAL I2C handle that completed the transfer.
+ * @return None.
+ */
 void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef *hi2c) {
   if (hi2c->Instance == I2C1) {
     s_done = true;
@@ -210,6 +243,15 @@ void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef *hi2c) {
   }
 }
 
+/**
+ * @brief Record an I2C transfer error and release the busy state.
+ *
+ * Why: Pollers and blocking reads need the transfer to terminate with a
+ * captured error instead of waiting until timeout.
+ *
+ * @param hi2c HAL I2C handle that reported the error.
+ * @return None.
+ */
 void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c) {
   if (hi2c->Instance == I2C1) {
     s_last_error = hi2c->ErrorCode;
