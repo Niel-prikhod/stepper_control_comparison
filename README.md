@@ -10,14 +10,15 @@ and encoder drivers, and a HAL-free platform abstraction.
 inc/
   drivers/motor/   public motor driver API
   drivers/encoder/ public encoder driver API
-  platform/        HAL-free interfaces (stepper, i2c, log)
+  platform/        HAL-free interfaces (stepper, i2c, log, dwt, timer, uart)
   app/             app-internal API
 src/
   drivers/motor/   motor driver impl + private headers
   drivers/encoder/ AS5600-compatible encoder impl
   platform/stm32/  HAL adapters (only place including CubeMX headers)
   platform/shim/   startup/system stub for boards without CubeMX output
-  app/             main.c + control logic
+  app/             main.c + command parser + measurements
+host/              PC serial logger
 cubemx/<BOARD>/    CubeMX-owned output (never hand-edit)
 cmake/
   toolchain/       generic arm-none-eabi toolchain
@@ -80,20 +81,43 @@ cmake --build build/g491re
 
 Artifacts: `build/g491re/src/app/firmware.{elf,hex,bin}`.
 
-## Encoder and serial log
+## Measurement application
 
 The default firmware expects an AS5600-compatible encoder on I2C1
-(`PA15` SCL, `PB7` SDA, address `0x36`) and logs on the ST-Link VCP
-(LPUART1 `PA2`/`PA3`, 115200 8N1). Open the VCP with a serial terminal:
+(`PA15` SCL, `PB7` SDA, address `0x36`) and accepts ASCII commands on the
+ST-Link VCP (LPUART1 `PA2`/`PA3`, 115200 8N1).
 
-```sh
-stty -F /dev/ttyACM0 115200 raw -echo
-cat /dev/ttyACM0
+On power-up the firmware self-tests DWT, TIM1, UART, and the encoder. It then
+emits `READY` and waits for commands. Supported commands:
+
+```text
+mode0
+mode1 <target_hz> <duration_ms>
+mode2 <target_hz> <num_samples>
+mode3 <target_hz> <num_samples>
+mode4 <num_trials>
+mode5 <start_hz> <step_hz> <max_hz>
 ```
 
-Each loop logs the step count, raw encoder value, angle in degrees, delta since
-the previous sample, and magnet status flags. `AS5600L` uses address `0x40`;
-change `ENCODER_I2C_ADDRESS` or call `encoder_set_address()`.
+Responses use `BEGIN <mode>`, key=value result lines, and `END <mode> OK|ERR`.
+Measurements use DWT cycle timing. Modes 1 and 2 step the motor at the commanded
+rate; mode 3 compares idle, constant, and ramped load; mode 4 measures
+command-to-first-step latency. Mode 5 compares AS5600 angle change with the
+commanded step count.
+
+`AS5600L` uses address `0x40`; change `ENCODER_I2C_ADDRESS` or call
+`encoder_set_address()`.
+
+## Host logger
+
+```sh
+python3 -m pip install -r host/requirements.txt
+python3 host/measure.py /dev/ttyACM0 "mode1 1000 1000"
+```
+
+The host writes each received line with an ISO-8601 UTC prefix to
+`log_mode<N>_<UTC>.txt` and exits non-zero on timeout, firmware error, or a
+malformed `BEGIN`/`END` response. See `host/README.md`.
 
 Other boards: `cmake --preset nucleo-f401re`, `nucleo-g431kb` (shim build until
 CubeMX output exists in `cubemx/<board>/`).
