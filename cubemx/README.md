@@ -32,13 +32,19 @@ expects the CubeMX output and BSP configuration to provide the following.
 | `MOTOR_B_GPIO_Port` / `MOTOR_B_Pin` | Motor coil B |
 | `MOTOR_C_GPIO_Port` / `MOTOR_C_Pin` | Motor coil C |
 | `MOTOR_D_GPIO_Port` / `MOTOR_D_Pin` | Motor coil D |
-| `LED2`, `BSP_LED_Init()`, `BSP_LED_Toggle()` | Heartbeat LED |
+| `LED2`, `BSP_LED_Init()`, `BSP_LED_On()`, `BSP_LED_Off()` | Status LED |
 | `MX_DMA_Init()` | DMA1/DMAMUX clocks and DMA1_Channel1 IRQ |
 | `MX_I2C1_Init()` | I2C1 handle and timing |
 | `hi2c1` | I2C1 handle |
 | `hdma_i2c1_rx` | I2C1 RX DMA handle |
 | `I2C1_EV_IRQn`, `I2C1_ER_IRQn` | I2C event/error NVIC lines |
 | `BSP_COM_Init()`, `BSP_COM_SelectLogPort()` | VCP LPUART1 setup |
+| `LPUART1_IRQn` | VCP receive interrupt line |
+| `MX_TIM1_Init()` | 1 MHz step timer setup |
+| `htim1`, `TIM1_UP_TIM16_IRQn` | TIM1 handle and update interrupt |
+| `HAL_RCC_GetHCLKFreq()` | DWT cycle-to-time conversion |
+| `HAL_RCC_GetPCLK2Freq()` | TIM1 prescaler calculation |
+| `CoreDebug`, `DWT` | Cycle counter timing |
 | `COM1`, `COM_InitTypeDef`, `hcom_uart[COM1]` | BSP COM logging handle |
 | `HAL_GetTick()` | I2C timeout and HAL delay |
 
@@ -61,7 +67,14 @@ call `HAL_DMA_IRQHandler(&hdma_i2c1_rx)`.
   `HAL_I2C_DeInit(&hi2c1)` and then `MX_I2C1_Init()`. The generated init path
   must be safe to call again.
 - **BSP COM**: `USE_BSP_COM_FEATURE=1`, `USE_COM_LOG=1`, `COM1` on LPUART1
-  `PA2`/`PA3`, 115200 8N1.
+  `PA2`/`PA3`, 115200 8N1. The platform adapter starts one-byte RX
+  interrupts and owns `LPUART1_IRQHandler()`.
+- **TIM1**: enabled as a 1 MHz up-counter with update interrupt, ARR up to
+  65535. The platform adapter overwrites the prescaler from PCLK2 and disables
+  ARR preload so step-rate changes take effect immediately.
+- **DWT**: `CoreDebug->DEMCR` trace enable and `DWT->CYCCNT` are configured by
+  the platform adapter. No CubeMX setting is required. Firmware faults if the
+  cycle counter cannot be enabled.
 - **Motor GPIO**: `PA0`, `PA1`, `PA4`, `PB0` as push-pull outputs.
 - **Clock**: 170 MHz from HSI/PLL. If the clock tree changes, regenerate the
   I2C timing value.
@@ -74,15 +87,23 @@ The platform adapter owns these strong symbols:
 - `I2C1_ER_IRQHandler()`
 - `HAL_I2C_MemRxCpltCallback()`
 - `HAL_I2C_ErrorCallback()`
+- `LPUART1_IRQHandler()`
+- `HAL_UART_RxCpltCallback()`
+- `HAL_UART_ErrorCallback()`
+- `HAL_TIM_PeriodElapsedCallback()`
 
 Do not define them in application code or another driver. If CubeMX regenerates
 them into `stm32g4xx_it.c`, remove the duplicate definitions or move the
 platform implementation into the generated file. Duplicate strong definitions
 fail the link.
 
-The adapter sets DMA1_Channel1 priority `0`, I2C1 event/error priority `1`, and
-assumes SysTick priority `0`. The I2C timeout relies on a running 1 ms
-`HAL_GetTick()`.
+The adapter sets TIM1 update priority `0`, DMA1_Channel1 priority `0`, I2C1
+event/error priority `1`, LPUART1 priority `2`, and assumes SysTick priority
+`0`. The I2C timeout relies on a running 1 ms `HAL_GetTick()`.
+
+`TIM1_UP_TIM16_IRQHandler()` must remain in the generated interrupt file and
+call `HAL_TIM_IRQHandler(&htim1)`. The platform adapter supplies the
+`HAL_TIM_PeriodElapsedCallback()` implementation.
 
 ### Initialization order
 
@@ -92,10 +113,13 @@ The adapter requires:
 2. `SystemClock_Config()`
 3. `MX_GPIO_Init()`
 4. `BSP_LED_Init(LED2)`
-5. `MX_DMA_Init()`
-6. `MX_I2C1_Init()`
-7. Enable `I2C1_EV_IRQn` and `I2C1_ER_IRQn`
-8. `BSP_COM_Init(COM1, ...)` and `BSP_COM_SelectLogPort(COM1)`
+5. `platform_dwt_init()`
+6. `MX_DMA_Init()`
+7. `MX_I2C1_Init()`
+8. Enable `I2C1_EV_IRQn` and `I2C1_ER_IRQn`
+9. `BSP_COM_Init(COM1, ...)` and `BSP_COM_SelectLogPort(COM1)`
+10. Enable `LPUART1_IRQn` and arm `HAL_UART_Receive_IT()`
+11. `MX_TIM1_Init()`, set the 1 MHz prescaler, disable ARR preload
 
 `MX_DMA_Init()` must run before `MX_I2C1_Init()` because the I2C MSP init
 configures the DMA handle.
@@ -111,8 +135,9 @@ compile or link time. Such a board needs one of:
 - compile-time capability macros, or
 - a board-specific platform adapter selected by CMake.
 
-USART1, TIM1, the user button, and SWO are not required by the current platform
-adapter and may remain generated but inactive.
+USART1, the user button, and SWO are not required by the current platform
+adapter and may remain generated but inactive. LPUART1, TIM1, and DWT are
+required by the measurement application.
 
 ## Recommended CubeMX settings
 
