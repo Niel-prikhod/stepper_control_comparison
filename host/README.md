@@ -1,21 +1,26 @@
-# Measurement Logger
+# Host Scripts
 
-Install the serial dependency:
+Both scripts declare their `pyserial` dependency inline, so `uv` provisions an
+isolated environment automatically.
+
+## Single command logger
+
+Run one command and write a timestamped log:
 
 ```sh
-python3 -m pip install -r host/requirements.txt
-```
-
-Run a command and write a timestamped log:
-
-```sh
-python3 host/measure.py /dev/ttyACM0 "mode1 1000 1000"
+uv run host/measure.py --port /dev/ttyACM0 "mode1 1000 1000"
 ```
 
 If the command is omitted, the script prompts for it:
 
 ```sh
-python3 host/measure.py /dev/ttyACM0 --baud 115200
+uv run host/measure.py --port /dev/ttyACM0 --baud 115200
+```
+
+The script is executable and uses a `uv` shebang, so this also works:
+
+```sh
+./host/measure.py --port /dev/ttyACM0 "mode1 1000 1000"
 ```
 
 Each received line is written with an ISO-8601 UTC prefix. Logs are named
@@ -23,3 +28,31 @@ Each received line is written with an ISO-8601 UTC prefix. Logs are named
 The script exits non-zero for a timeout, a firmware error, or a malformed
 `BEGIN`/`END` response. Use `--timeout` to change the default 60 second limit
 and `--verbose` to echo received lines to stdout.
+
+## Full-board collection
+
+`collect.py` runs mode0 through mode5 for one board and writes the logs plus a
+`manifest.json` under `data/<board>/<UTC>/`:
+
+```sh
+uv run host/collect.py --board g491re --port /dev/ttyACM0
+```
+
+Reset the board before a run so it is idle at `READY`. Default parameters:
+
+| Mode | Default command |
+| --- | --- |
+| 0 | `mode0` |
+| 1 | `mode1 1000 1000` |
+| 2 | `mode2 1000 10000` |
+| 3 | `mode3 1000 1000` |
+| 4 | `mode4 100` |
+| 5 | `mode5 100 200 5000` |
+
+Override them with `--mode1-hz`, `--mode1-duration-ms`, `--mode2-hz`,
+`--mode2-samples`, `--mode3-hz`, `--mode3-samples`, `--mode4-trials`,
+`--mode5-start-hz`, `--mode5-step-hz`, and `--mode5-max-hz`.
+
+Use `--modes 0,1,3` to select modes, `--keep-going` to continue after a failed
+mode, `--out-dir` to change the output root, and `--dry-run` to print the
+commands without opening the serial port.

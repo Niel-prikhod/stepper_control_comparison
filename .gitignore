@@ -10,3 +10,5 @@ cubemx/*/CMakePresets.json
 cubemx/*/*.mxproject
 cubemx/*/cmake/
 notes/
+data/
+log_*

@@ -108,16 +108,27 @@ commanded step count.
 `AS5600L` uses address `0x40`; change `ENCODER_I2C_ADDRESS` or call
 `encoder_set_address()`.
 
-## Host logger
+## Host scripts
+
+The host scripts declare their `pyserial` dependency inline; `uv` creates an
+isolated environment automatically.
 
 ```sh
-python3 -m pip install -r host/requirements.txt
-python3 host/measure.py /dev/ttyACM0 "mode1 1000 1000"
+uv run host/measure.py --port /dev/ttyACM0 "mode1 1000 1000"
 ```
 
-The host writes each received line with an ISO-8601 UTC prefix to
+`measure.py` writes each received line with an ISO-8601 UTC prefix to
 `log_mode<N>_<UTC>.txt` and exits non-zero on timeout, firmware error, or a
-malformed `BEGIN`/`END` response. See `host/README.md`.
+malformed `BEGIN`/`END` response.
+
+To collect mode0 through mode5 for one board in a single run:
+
+```sh
+uv run host/collect.py --board g491re --port /dev/ttyACM0
+```
+
+This writes logs and `manifest.json` under `data/<board>/<UTC>/`. See
+`host/README.md` for parameter overrides.
 
 Other boards: `cmake --preset nucleo-f401re`, `nucleo-g431kb` (shim build until
 CubeMX output exists in `cubemx/<board>/`).

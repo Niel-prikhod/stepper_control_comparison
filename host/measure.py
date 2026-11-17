@@ -1,4 +1,10 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.10"
+# dependencies = [
+#   "pyserial>=3.5",
+# ]
+# ///
 
 import argparse
 import datetime
@@ -42,12 +48,18 @@ def main():
     parser = argparse.ArgumentParser(
         description="Send a measurement command and log the firmware response."
     )
-    parser.add_argument("port", help="serial device, for example /dev/ttyACM0")
-    parser.add_argument("--baud", type=int, default=115200, help="serial baud rate")
-    parser.add_argument("--timeout", type=float, default=60.0, help="command timeout in seconds")
-    parser.add_argument("--log-dir", default=".", help="directory for timestamped logs")
-    parser.add_argument("--verbose", action="store_true", help="print received lines")
-    parser.add_argument("command", nargs="?", help="command line, for example 'mode1 1000 1000'")
+    parser.add_argument("--port", default="/dev/ttyACM0",
+                        help="serial device, for example /dev/ttyACM0")
+    parser.add_argument("--baud", type=int, default=115200,
+                        help="serial baud rate")
+    parser.add_argument("--timeout", type=float, default=60.0,
+                        help="command timeout in seconds")
+    parser.add_argument("--log-dir", default=".",
+                        help="directory for timestamped logs")
+    parser.add_argument("--verbose", action="store_true",
+                        help="print received lines")
+    parser.add_argument("command", nargs="?",
+                        help="command line, for example 'mode1 1000 1000'")
     args = parser.parse_args()
 
     command = args.command
@@ -143,7 +155,8 @@ def main():
         print(f"error={firmware_error} log={log_path}")
         return 1
 
-    print(f"mode={end_mode} status={end_status} lines={line_count} log={log_path}")
+    print(f"mode={end_mode} status={end_status} lines={
+          line_count} log={log_path}")
     return 0
 
 
