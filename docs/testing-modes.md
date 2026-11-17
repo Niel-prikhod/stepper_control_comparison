@@ -155,14 +155,27 @@ For each condition it reports `condition`, `load_pct`, `peak_load_pct`,
 `peak_isr_us`.
 
 With `target_hz=0`, no step timer interrupt runs. The firmware services the
-main loop for `samples` milliseconds and reports a timer-free `condition=idle`
-with `load_pct`, `peak_load_pct`, `idle_cycles`, `busy_cycles`,
-`total_cycles`, `iterations`, and `main_loop_mean_us`. The load is computed
-from the measured main-loop service time:
+main loop for `samples` milliseconds and calls `__WFE()` between iterations.
+It reports a timer-free `condition=idle` with `busy_cycles`, `idle_cycles`,
+`total_cycles`, `busy_pct`, `idle_pct`, `iterations`,
+`main_loop_iteration_us`, and `wfe_present`. `wfe_present=yes` is a static
+implementation note that the STM32 main loop uses WFE; the shim does not enter
+WFE. `busy_cycles` is accumulated while servicing status and queued UART input
+outside WFE, and `idle_cycles = total_cycles - busy_cycles`. Interrupt service
+that wakes WFE is included in the elapsed remainder rather than separately
+counted as busy, so this is a foreground-load estimate, not IRQ-inclusive CPU
+utilization. The percentages are:
 
 ```text
-load_pct = 100 * (1 - idle_cycles / total_cycles)
+busy_pct = 100 * busy_cycles / total_cycles
+idle_pct = 100 * idle_cycles / total_cycles
 ```
+
+The log includes both cycle totals so the percentages can be checked offline.
+They are printed to three decimal places by truncation, so their displayed
+values can sum to 99.999% or 100.001%; use the raw cycle counts for exact
+recalculation. `main_loop_iteration_us` is total elapsed DWT time divided by
+the number of loop iterations, including the WFE interval.
 
 For non-zero `target_hz`, `load_pct` is the sum of measured ISR execution
 cycles divided by the sum of measured timer periods:
@@ -176,29 +189,29 @@ interrupt overhead without motor GPIO writes. The ramp condition changes the
 auto-reload value from inside the ISR; compare it with `constant` to see the
 cost of changing the timer period.
 
-## Mode 4: command-to-first-step latency
+## Mode 4: UART-trigger-to-first-step latency
 
 ```sh
 uv run host/measure.py --port /dev/ttyACM0 mode4 100
 ```
 
-Why: estimates response time from command processing to the first motor step.
-It is useful for evaluating the control-loop and UART handling overhead.
+Why: measures the delay from the first byte of a UART trigger to the first
+step's GPIO write, with a timer that is already free-running throughout the
+measurement. The timer period is 100 µs and its counter is not reset for each
+trial.
 
-Each trial starts a 100 Hz timer and records the time from the start of command
-processing to the first timer interrupt. Trials are separated by 50 ms so the
-next command cannot overlap the previous step. All latency samples are kept in
-a static buffer, so the firmware can report `p99_us` in addition to mean,
-standard deviation, minimum, and maximum.
-Output fields: `num_trials`, `baud`, `cmd_len`, `latency_ref=cmd_process`,
-`uart_rx_to_first_step_us`, `mean_us`, `sigma_us`, `stddev_us`, `min_us`,
-`max_us`, `p99_us`, and `clock_hz`.
-
-`mean_us` and the min/max values use the command-processing reference.
-`uart_rx_to_first_step_us` is measured only for the first trial and uses the
-UART line timestamp; it is not included in the statistics. This distinction is
-important when comparing logs: `latency_ref=cmd_process` is the current
-firmware behavior, not a full per-trial UART-to-step measurement.
+After `BEGIN 4`, `host/measure.py` sends one `t` line per trial with randomized
+spacing. The UART receive interrupt timestamps the first byte of each `t`
+line; the timer ISR timestamps immediately after `stepper_advance()` writes
+the motor GPIOs. The reported `mean_us`, `sigma_us`, `min_us`, `max_us`, and
+`p99_us` are computed from those per-trial differences. With trigger phase
+spread across the free-running timer period, the expected standard deviation
+is approximately `period_us / sqrt(12)` (about 28.9 µs for a 100 µs period).
+Output fields include `num_trials`, `timer_period_us`,
+`latency_ref=uart_first_byte_to_first_step_gpio`, `mean_us`, `sigma_us`,
+`stddev_us`, `min_us`, `max_us`, `p99_us`, `clock_hz`, and `raw_count`,
+followed by one raw DWT cycle count per trial. Use `host/measure.py`; sending
+only `mode4 100` without the host trigger lines will time out.
 
 ## Mode 5: maximum step rate with encoder feedback
 

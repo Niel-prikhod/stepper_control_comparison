@@ -597,7 +597,7 @@ def main():
         elif idle_load > 5.0:
             warnings.append("MODE3_IDLE_BUSY_ABOVE_TARGET")
 
-    # Step 5: command-to-first-step latency.
+    # Step 5: UART-trigger-to-first-step latency.
     mode4 = run_measure(
         "mode4_run1",
         "mode4 100",
@@ -696,7 +696,17 @@ def main():
             jitter_cells[freq] = (fmt(item["sigma_mean_us"]), note)
 
     cpu_idle_cell = fmt(idle_load)
-    cpu_idle_note = "timer-free; no timer ISR; busy time outside WFE"
+    cpu_idle_note = (
+        "timer-free foreground load; busy time outside WFE; interrupt time "
+        "during WFE remains in idle_cycles"
+    )
+    idle_condition = mode3_idle.conditions.get("idle", {})
+    if "busy_cycles" in idle_condition and "idle_cycles" in idle_condition:
+        cpu_idle_note += (
+            f"; busy_cycles={idle_condition['busy_cycles']}"
+            f"; idle_cycles={idle_condition['idle_cycles']}"
+            f"; total_cycles={idle_condition.get('total_cycles', 'missing')}"
+        )
     if idle_pct is not None:
         cpu_idle_note += f"; idle_pct={fmt(idle_pct)}%"
     if idle_main_loop_us is not None:
@@ -753,9 +763,9 @@ def main():
 | **CPU idle, idle condition (%)** | {fmt(idle_pct)} | from `mode3 0 1000`; expected >95% |
 | **CPU load, constant 1 kHz (%)** | {cpu_const_cell} | {cpu_const_note} |
 | **Worst ISR duration (µs)** | {worst_isr_cell} | {worst_isr_note} |
-| **Command latency mean (µs)** | {fmt(latency_mean)} | from `mode4 100`; latency_ref={latency_ref or "missing"} |
-| **Command latency σ (µs)** | {fmt(latency_sigma)} | from `mode4 100`; expected >10 µs |
-| **Command latency max / p99 (µs)** | {latency_max_p99_cell} | {latency_max_p99_note} |
+| **UART trigger-to-step mean (µs)** | {fmt(latency_mean)} | from `mode4 100`; latency_ref={latency_ref or "missing"} |
+| **UART trigger-to-step σ (µs)** | {fmt(latency_sigma)} | from `mode4 100`; expected ≈ period / √12 (28.9 µs at 100 µs) |
+| **UART trigger-to-step max / p99 (µs)** | {latency_max_p99_cell} | {latency_max_p99_note} |
 | **Warnings** | {warnings_text} | see summary.csv notes |
 """
 
@@ -861,28 +871,28 @@ def main():
         worst_isr_note,
     )
     add(
-        "Command latency mean (µs)",
+        "UART trigger-to-step mean (µs)",
         csv_num(latency_mean),
         "",
         "us",
         f"from mode4 100; latency_ref={latency_ref or 'missing'}",
     )
     add(
-        "Command latency σ (µs)",
+        "UART trigger-to-step σ (µs)",
         csv_num(latency_sigma),
         "",
         "us",
-        "from mode4 100; expected >10 us",
+        "from mode4 100; expected ≈ period / sqrt(12) (28.9 us at 100 us)",
     )
     add(
-        "Command latency max (µs)",
+        "UART trigger-to-step max (µs)",
         csv_num(latency_max),
         "",
         "us",
         f"from mode4 100; latency_ref={latency_ref or 'missing'}",
     )
     add(
-        "Command latency p99 (µs)",
+        "UART trigger-to-step p99 (µs)",
         csv_num(latency_p99),
         "",
         "us",
