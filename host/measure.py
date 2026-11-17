@@ -8,6 +8,7 @@
 
 import argparse
 import datetime
+import random
 import re
 import sys
 import time
@@ -32,6 +33,25 @@ def command_mode(command):
         return "X"
     match = re.fullmatch(r"mode([0-5])", parts[0], re.IGNORECASE)
     return match.group(1) if match else "X"
+
+
+def mode4_trials(command):
+    parts = command.strip().split()
+    if len(parts) < 1 or parts[0].lower() != "mode4":
+        return 0
+    if len(parts) < 2:
+        return 100
+    try:
+        return max(0, min(100, int(parts[1])))
+    except ValueError:
+        return 0
+
+
+def send_mode4_triggers(port, count):
+    for _ in range(count):
+        time.sleep(random.uniform(0.0015, 0.0035))
+        port.write(b"t\n")
+        port.flush()
 
 
 def parse_end(line):
@@ -88,6 +108,7 @@ def main():
 
     begin_seen = False
     begin_mode = None
+    triggers_sent = False
     end_seen = False
     end_mode = None
     end_status = None
@@ -128,6 +149,9 @@ def main():
                         if expected_mode != "X" and begin_mode != expected_mode:
                             firmware_error = "mode_mismatch"
                             break
+                        if begin_mode == "4" and not triggers_sent:
+                            send_mode4_triggers(port, mode4_trials(command))
+                            triggers_sent = True
 
                 if line.startswith("ERR"):
                     firmware_error = line

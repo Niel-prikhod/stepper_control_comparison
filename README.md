@@ -98,7 +98,7 @@ emits `READY` and waits for commands. Supported commands:
 ```text
 mode0
 mode1 <target_hz> <duration_ms>
-mode2 <target_hz> <num_samples>
+mode2 <target_hz> <num_samples> [raw=1]
 mode3 <target_hz> <num_samples>
 mode4 <num_trials>
 mode5 <start_hz> <step_hz> <max_hz>
@@ -106,9 +106,10 @@ mode5 <start_hz> <step_hz> <max_hz>
 
 Responses use `BEGIN <mode>`, key=value result lines, and `END <mode> OK|ERR`.
 Measurements use DWT cycle timing. Modes 1 and 2 step the motor at the commanded
-rate; mode 3 compares idle, constant, and ramped load; mode 4 measures
-command-to-first-step latency. Mode 5 compares AS5600 angle change with the
-commanded step count.
+rate; mode 2 can dump up to 100 raw DWT interval values with `raw=1`. Mode 3
+compares idle, constant, and ramped load, or runs a timer-free main-loop load
+when `target_hz=0`. Mode 4 measures command-to-first-step latency and reports
+p99. Mode 5 compares AS5600 angle change with the commanded step count.
 
 `AS5600L` uses address `0x40`; change `ENCODER_I2C_ADDRESS` or call
 `encoder_set_address()`.
@@ -134,6 +135,12 @@ uv run host/collect.py --board g491re --port /dev/ttyACM0
 
 This writes logs and `manifest.json` under `data/<board>/<UTC>/`. See
 `host/README.md` for parameter overrides.
+
+To run the fixed validation scenario and regenerate `results/<board>/`:
+
+```sh
+python3 host/run_scenario.py --port /dev/ttyACM0
+```
 
 Other boards: `cmake --preset nucleo-f401re`, `nucleo-g431kb` (shim build until
 CubeMX output exists in `cubemx/<board>/`).

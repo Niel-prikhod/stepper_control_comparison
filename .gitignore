@@ -12,3 +12,7 @@ cubemx/*/cmake/
 notes/
 data/
 log_*
+**/__pycache__
+logs/
+results/
+docs/firmware-architecture.pdf
