@@ -50,14 +50,24 @@ void stepper_move_steps(int32_t steps) {
   uint32_t n = (steps > 0) ? (uint32_t)steps : (uint32_t)(-steps);
   platform_motor_enable(true);
   for (uint32_t i = 0; i < n; i++) {
-    s_index = stepper_next_index(s_index, s_cfg.sequence_len, dir);
-    platform_motor_write_coils(s_cfg.coil_sequence[s_index]);
+    (void)stepper_advance(dir);
     platform_delay_us(s_cfg.step_interval_us);
   }
-  platform_motor_write_coils(0);
-  platform_motor_enable(false);
+  stepper_deenergize();
 }
 
 void stepper_set_enabled(int enabled) {
   platform_motor_enable(enabled != 0);
+}
+
+uint8_t stepper_advance(int dir) {
+  s_index = stepper_next_index(s_index, s_cfg.sequence_len, dir);
+  uint8_t mask = s_cfg.coil_sequence[s_index];
+  platform_motor_write_coils(mask);
+  return mask;
+}
+
+void stepper_deenergize(void) {
+  platform_motor_write_coils(0u);
+  platform_motor_enable(false);
 }

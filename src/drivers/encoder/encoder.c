@@ -11,6 +11,15 @@ static uint8_t s_buf[ENCODER_READ_LEN];
 static bool s_started;
 static uint32_t s_errors;
 
+/**
+ * @brief Decode the encoder status and angle bytes into a sample.
+ *
+ * Why: Converts the raw I2C payload into angle, millidegrees, magnet flags, and
+ * a validity decision used by measurement code.
+ *
+ * @param sample Destination for the decoded sample; null is rejected.
+ * @return true when the sample was written; false for a null destination.
+ */
 static bool encoder_parse(encoder_sample_t *sample) {
   if (sample == 0) {
     return false;
