@@ -113,6 +113,35 @@ bool platform_step_timer_start(uint32_t period_us,
 #endif
 }
 
+bool platform_step_timer_start_free_running(
+    uint32_t period_us, platform_step_callback_t callback) {
+#if PLATFORM_HAVE_HAL
+  if (s_running || callback == 0) {
+    return false;
+  }
+
+  period_us = clamp_period_us(period_us);
+  s_callback = callback;
+  s_have_last = false;
+  s_last_ts = 0u;
+  s_start_ts = platform_dwt_read();
+  s_running = true;
+
+  __HAL_TIM_SET_AUTORELOAD(&htim1, period_us - 1u);
+
+  if (HAL_TIM_Base_Start_IT(&htim1) != HAL_OK) {
+    s_running = false;
+    s_callback = 0;
+    return false;
+  }
+  return true;
+#else
+  (void)period_us;
+  (void)callback;
+  return false;
+#endif
+}
+
 void platform_step_timer_stop(void) {
 #if PLATFORM_HAVE_HAL
   if (s_running) {
@@ -140,6 +169,22 @@ bool platform_step_timer_is_running(void) {
   return s_running;
 #else
   return false;
+#endif
+}
+
+uint32_t platform_step_timer_get_prescaler(void) {
+#if PLATFORM_HAVE_HAL
+  return htim1.Instance->PSC;
+#else
+  return 0u;
+#endif
+}
+
+uint32_t platform_step_timer_get_autoreload(void) {
+#if PLATFORM_HAVE_HAL
+  return htim1.Instance->ARR;
+#else
+  return 0u;
 #endif
 }
 

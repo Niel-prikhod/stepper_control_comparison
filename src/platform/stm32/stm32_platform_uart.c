@@ -16,6 +16,7 @@
 static char s_line[PLATFORM_UART_LINE_MAX];
 static char s_ready_line[PLATFORM_UART_LINE_MAX];
 static volatile uint32_t s_line_len;
+static volatile uint32_t s_line_first_rx_cycles;
 static volatile uint32_t s_ready_line_len;
 static volatile uint32_t s_ready_rx_cycles;
 static volatile bool s_line_ready;
@@ -207,11 +208,15 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
       memcpy(s_ready_line, s_line, len);
       s_ready_line[len] = '\0';
       s_ready_line_len = len;
-      s_ready_rx_cycles = platform_dwt_read();
+      s_ready_rx_cycles = s_line_first_rx_cycles;
       s_line_ready = true;
     }
     s_line_len = 0u;
+    s_line_first_rx_cycles = 0u;
   } else {
+    if (s_line_len == 0u) {
+      s_line_first_rx_cycles = platform_dwt_read();
+    }
     if (s_line_len < PLATFORM_UART_LINE_MAX - 1u) {
       s_line[s_line_len++] = c;
     }

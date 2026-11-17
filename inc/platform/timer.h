@@ -60,6 +60,9 @@ void platform_step_timer_init(void);
 bool platform_step_timer_start(uint32_t period_us,
                                platform_step_callback_t callback);
 
+bool platform_step_timer_start_free_running(uint32_t period_us,
+                                            platform_step_callback_t callback);
+
 /**
  * @brief Stop the step timer and clear the active callback.
  *
@@ -92,6 +95,25 @@ bool platform_step_timer_set_period_us(uint32_t period_us);
  * @return true while the timer is running; otherwise false.
  */
 bool platform_step_timer_is_running(void);
+
+/**
+ * @brief Read the timer prescaler register.
+ *
+ * Why: Mode 0 reports the actual PSC and ARR values so host diagnostics can
+ * verify the 1 MHz timer tick independently of the requested frequency.
+ *
+ * @return Raw PSC register value, or zero when the platform has no timer.
+ */
+uint32_t platform_step_timer_get_prescaler(void);
+
+/**
+ * @brief Read the timer auto-reload register.
+ *
+ * Why: Mode 0 reports the actual ARR value used for each frequency.
+ *
+ * @return Raw ARR register value, or zero when the platform has no timer.
+ */
+uint32_t platform_step_timer_get_autoreload(void);
 
 /**
  * @brief Clear accumulated step-timer statistics.

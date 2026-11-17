@@ -55,8 +55,8 @@ bool platform_uart_selftest(void);
  *
  * @param buf Destination buffer for the null-terminated line.
  * @param buf_len Size of @p buf in bytes; must be non-zero.
- * @param rx_cycles Optional destination for the DWT timestamp captured when the
- *        line was completed; may be null.
+ * @param rx_cycles Optional destination for the DWT timestamp captured at the
+ *        first received byte of the line; may be null.
  * @return true when a line was copied; false when no line is ready or arguments
  *         are invalid.
  */
