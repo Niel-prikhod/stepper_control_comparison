@@ -18,6 +18,12 @@
       "cacheVariables": { "TARGET_BOARD": "g491re" }
     },
     {
+      "name": "f446re",
+      "displayName": "STM32F446RE",
+      "inherits": "base",
+      "cacheVariables": { "TARGET_BOARD": "f446re" }
+    },
+    {
       "name": "nucleo-f401re",
       "displayName": "Nucleo-F401RE (F4)",
       "inherits": "base",
@@ -32,6 +38,7 @@
   ],
   "buildPresets": [
     { "name": "g491re", "configurePreset": "g491re" },
+	{ "name": "f446re", "configurePreset": "f446re"},
     { "name": "nucleo-f401re", "configurePreset": "nucleo-f401re" },
     { "name": "nucleo-g431kb", "configurePreset": "nucleo-g431kb" }
   ]

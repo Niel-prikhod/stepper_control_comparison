@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-set(SUPPORTED_BOARDS g491re nucleo-f401re nucleo-g431kb)
+set(SUPPORTED_BOARDS g491re f446re nucleo-f401re nucleo-g431kb)
 if(NOT DEFINED TARGET_BOARD)
   message(FATAL_ERROR "TARGET_BOARD not set. Use a preset or -DTARGET_BOARD=<board>. Supported: ${SUPPORTED_BOARDS}")
 endif()
