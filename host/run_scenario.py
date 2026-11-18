@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the fixed G491RE validation scenario and write result reports."""
+"""Run the fixed validation scenario and write board-specific result reports."""
 
 import argparse
 import csv
@@ -20,9 +20,13 @@ LOGS = ROOT / "logs"
 MODE1_FREQS = (100, 333, 500, 777, 1000, 1234, 2000, 2345, 4000)
 MODE1_TABLE_FREQS = (100, 500, 1000, 2000, 4000)
 MODE2_FREQS = (500, 1000, 2000, 4000)
+BOARD_PROFILES = {
+    "g491re": {"clock_hz": 170000000, "psc": 169},
+    "f446re": {"clock_hz": 84000000, "psc": 83},
+}
 EXPECTED_BOARD = "g491re"
-EXPECTED_CLOCK_HZ = 170000000
-EXPECTED_PSC = 169
+EXPECTED_CLOCK_HZ = BOARD_PROFILES[EXPECTED_BOARD]["clock_hz"]
+EXPECTED_PSC = BOARD_PROFILES[EXPECTED_BOARD]["psc"]
 EXPECTED_RAW_SAMPLES = 100
 EXPECTED_TRIALS = 100
 MODE4_SIGMA_MIN_US = 1.0
@@ -307,15 +311,41 @@ def expected_error_ppm(hz):
     return ((actual_micro_hz - requested_micro_hz) * 1000000) // requested_micro_hz
 
 
-def validate_mode0(record):
+def board_profile(record):
+    board = record.fields.get("board")
+    clock = record.fields.get("clock_hz")
+    if board in BOARD_PROFILES:
+        return board, BOARD_PROFILES[board]
+    if clock:
+        try:
+            clock_hz = int(clock)
+        except ValueError:
+            clock_hz = None
+        if clock_hz:
+            return board, {
+                "clock_hz": clock_hz,
+                "psc": clock_hz // 1000000 - 1,
+            }
+    return board, {"clock_hz": EXPECTED_CLOCK_HZ, "psc": EXPECTED_PSC}
+
+
+def validate_mode0(record, profile, expected_board=None):
     errors = []
     if not record.ok:
         return ["mode0 run failed"]
 
-    if record.fields.get("board") != EXPECTED_BOARD:
+    if profile is None:
+        errors.append("unsupported board")
+        return errors
+    actual_board = record.fields.get("board")
+    if actual_board is None:
         errors.append(f"board={record.fields.get('board')!r}")
+    elif expected_board is not None and actual_board != expected_board:
+        errors.append(
+            f"board={actual_board!r} expected={expected_board!r}"
+        )
     clock = fget(record, "clock_hz")
-    if clock is None or int(clock) != EXPECTED_CLOCK_HZ:
+    if clock is None or int(clock) != profile["clock_hz"]:
         errors.append(f"clock_hz={record.fields.get('clock_hz')!r}")
     for key in ("dwt", "timer", "uart", "i2c"):
         if record.fields.get(key) != "ok":
@@ -343,8 +373,8 @@ def validate_mode0(record):
                 continue
             if group_hz != hz:
                 errors.append(f"timing order {group_hz} != {hz}")
-            if psc != EXPECTED_PSC:
-                errors.append(f"{hz} Hz psc={psc} expected={EXPECTED_PSC}")
+            if psc != profile["psc"]:
+                errors.append(f"{hz} Hz psc={psc} expected={profile['psc']}")
             if arr != expected_arr(hz):
                 errors.append(f"{hz} Hz arr={arr} expected={expected_arr(hz)}")
             if period_us != arr + 1:
@@ -383,7 +413,11 @@ def write_mode4_raw_csv(path, raw_values, clock_hz):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", default="/dev/ttyACM0")
-    parser.add_argument("--board", default=EXPECTED_BOARD)
+    parser.add_argument(
+        "--board",
+        default=None,
+        help="optional board label override; otherwise mode0 identifies the board",
+    )
     args = parser.parse_args()
 
     started = time.monotonic()
@@ -405,7 +439,15 @@ def main():
         warnings,
     )
     records.append(mode0)
-    mode0_errors = validate_mode0(mode0)
+    board, profile = board_profile(mode0)
+    if args.board is not None:
+        board = args.board
+        profile = BOARD_PROFILES.get(board)
+    mode0_errors = validate_mode0(
+        mode0,
+        profile,
+        expected_board=args.board,
+    )
     if mode0_errors:
         print("STOP: Step 0 failed: " + "; ".join(mode0_errors), file=sys.stderr)
         return 2
